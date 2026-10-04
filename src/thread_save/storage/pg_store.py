@@ -23,7 +23,7 @@ import uuid
 
 import asyncpg
 
-from thread_save.models import Fidelity, MAX_BODY_CHARS, ThreadMeta, SlotKey
+from thread_save.models import Fidelity, MAX_BODY_CHARS, ThreadMeta, SlotKey, TurnData
 from thread_save.security.idempotency import (
     SlotIndex,
     compute_content_hash,
@@ -864,3 +864,33 @@ class PgStore:
             "gaps_lost_count": 0,
             "paused": t_row["paused"] if t_row else False,
         }
+
+    async def get_turns(self, account_id: str, thread_id: str) -> list[TurnData]:
+        """Fetch all stored turns for a thread as TurnData objects."""
+        async with self.pool.acquire() as conn:
+            acc_uuid = await self.resolve_account_uuid(conn, account_id)
+            rows = await conn.fetch(
+                """SELECT n, role, body, fidelity, chars, hash, recovered, created_at, page, turn_key, anchor
+                   FROM turns
+                   WHERE thread_id = $1
+                   ORDER BY n ASC, CASE WHEN role = 'user' THEN 0 ELSE 1 END ASC""",
+                thread_id,
+            )
+            turns: list[TurnData] = []
+            for r in rows:
+                fed = _RANK_TO_FIDELITY.get(r["fidelity"], Fidelity.VERBATIM)
+                td = TurnData(
+                    turn_index=r["n"],
+                    role=r["role"],
+                    body=r["body"],
+                    timestamp=r["created_at"],
+                    model="",
+                    fidelity=fed,
+                    char_count=r["chars"],
+                    content_hash=r["hash"] or "",
+                    recovered=r["recovered"],
+                    anchor=r["anchor"] or "",
+                    turn_key=r["turn_key"] or "",
+                )
+                turns.append(td)
+            return turns

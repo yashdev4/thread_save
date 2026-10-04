@@ -228,3 +228,30 @@
   - Same-region co-location between web application and PostgreSQL database enforced to ensure p95 < 300 ms budget.
 - **Needs User**:
   - **Gate (a)**: Live cloud instance provisioned and verified on Fly.io or Render with custom domain and SSL certificate.
+
+### Milestone X9: Cross-Surface Live Test Script & Multi-Device Verification
+- **Status**: Completed (Automated multi-device simulation verified across 4 surfaces; External Gate (e) documented under Needs User)
+- **Done When Criteria**:
+  - Single thread maintained across device switches (Desktop -> Android -> iOS -> Web), no split threads (split rate 0.0%).
+  - Dense turn slots (1..10) with 100% coverage and zero stubs.
+  - Chunked response (>6000 chars) assembled correctly without loss.
+  - Sensitive API keys redacted pre-insert and absent in stored plaintext.
+  - Multi-device continuity over Streamable HTTP transport verified.
+  - Comprehensive documentation and runbook in `docs/CROSS_SURFACE_TESTING.md`.
+- **Files & Functions**:
+  - `scripts/cross_surface_test.py`: Standalone CLI and test runner executing §8.2 live scenario protocol across Desktop, Android, iOS, and Web surfaces.
+  - `docs/CROSS_SURFACE_TESTING.md`: Architecture overview, platform constraints, onboarding steps, manual live scenario protocol (§8.2), and Gate (e) verification checklist.
+  - `src/thread_save/storage/pg_store.py`: Added `get_turns` to retrieve stored turns as `TurnData` for verification and projection.
+  - `tests/test_cross_surface.py`: Automated pytest suite testing service-level scenario execution and HTTP transport over `/mcp`.
+- **Test Results**:
+  - `tests/test_cross_surface.py`: 2 passed, 0 failed.
+  - `scripts/cross_surface_test.py`: Scenario passed cleanly with 0 split threads, 100% coverage, redaction passed, chunk assembly passed.
+  - Pytest full suite: 66 passed in 46.91s (including 1,000 Hypothesis examples in `tests/test_hypothesis_v2.py`).
+  - `run_tests.py`: 21 passed, 0 failed.
+  - fsck: Scanned 5 files across 2 threads (21 turns) in `vault_rich_fixture` - 0 errors, fsck clear.
+- **Decisions Taken**:
+  - Used ASCII borders in test runner outputs to guarantee platform compatibility across Windows console encodings.
+  - Added `get_turns` method to `PgStore` to fetch `TurnData` domain objects directly without going through markdown re-parsing.
+- **Needs User**:
+  - **Gate (e)**: Live manual cross-surface testing with real Claude Web/Android/iOS/Desktop accounts against a deployed instance.
+
