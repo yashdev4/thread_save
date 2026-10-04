@@ -463,5 +463,27 @@
 - **Decisions Taken**:
   - When turn bodies are encrypted with per-account AES-256-GCM keys, PostgreSQL GIN full-text indexing cannot index ciphertext. Falling back to title-only matching avoids misleading empty results, while explicitly declaring `search_mode: "titles_only"` and returning an explanatory `notice` ensures agents and users are fully aware why turn content was omitted from matching.
 
+---
+
+## Milestone H7: Deploy Config (Release / Pre-Deploy Migrations & Non-Sleeping Instance)
+- **Status**: Completed
+- **Done When Criteria**:
+  - Alembic migrations moved to dedicated deployment release / pre-deploy commands in `fly.toml` (`[deploy] release_command = "python -m alembic upgrade head"`) and `render.yaml` (`preDeployCommand: python -m alembic upgrade head`), avoiding migration execution in container entrypoints and preventing multi-replica race conditions.
+  - Render configured with paid `plan: starter` (non-sleeping instance) to eliminate cold starts and keep the MCP endpoint available with low latency.
+  - Automated tests verify presence and exact syntax of release commands and non-sleeping configuration across both platforms.
+- **Files & Functions**:
+  - `fly.toml`: Added `[deploy]` section with `release_command = "python -m alembic upgrade head"`.
+  - `render.yaml`: Added `preDeployCommand: python -m alembic upgrade head`; verified `plan: starter` for both web service and PostgreSQL database.
+  - `tests/test_deployment_readiness.py`: Added `test_h7_deploy_config_migrations_and_non_sleeping_instance` verifying fly release command, render pre-deploy command, and non-sleeping plan configuration.
+- **Test Results**:
+  - `tests/test_deployment_readiness.py`: 4 passed, 0 failed.
+  - Full pytest suite: 77 passed in 108.40s (including both Hypothesis 1,000-example profiles).
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns, 0 gaps, 2 outbox jobs in `thread_save_test` database — Postgres fsck clear.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+- **Decisions Taken**:
+  - Moving migrations out of container startup into the deployment orchestrator's release step prevents concurrent database migrations when scaling out web worker replicas, while ensuring failed schema migrations fail the release before routing traffic.
+  - Explicitly configured non-sleeping plans ensure uninterrupted SSE streaming and prevent 30-50s cold-start delays.
+
+
 
 

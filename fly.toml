@@ -6,6 +6,9 @@ primary_region = "iad" # US East (Ashburn/Virginia) - nearest to Anthropic cloud
 [build]
   dockerfile = "Dockerfile"
 
+[deploy]
+  release_command = "python -m alembic upgrade head"
+
 [env]
   APP_ENV = "production"
   PORT = "8000"

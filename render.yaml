@@ -7,6 +7,7 @@ services:
     region: ohio # US East - low latency to Anthropic infrastructure
     plan: starter # Paid starter tier ensures always-on instance without sleep/cold starts
     dockerfilePath: Dockerfile
+    preDeployCommand: python -m alembic upgrade head
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL

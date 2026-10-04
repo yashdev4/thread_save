@@ -169,3 +169,22 @@ def test_x8_deployment_configuration_files():
     assert "p95 < 300 ms" in docs_content
     assert "Cold Starts" in docs_content
     assert "PITR" in docs_content
+
+
+def test_h7_deploy_config_migrations_and_non_sleeping_instance():
+    """Milestone H7: Verify Alembic migrations moved to release/pre-deploy commands and non-sleeping instance."""
+    # 1. fly.toml release_command
+    fly_path = Path("fly.toml")
+    assert fly_path.exists()
+    fly_content = fly_path.read_text(encoding="utf-8")
+    assert "[deploy]" in fly_content
+    assert 'release_command = "python -m alembic upgrade head"' in fly_content
+
+    # 2. render.yaml preDeployCommand & non-sleeping tier
+    render_path = Path("render.yaml")
+    assert render_path.exists()
+    render_content = render_path.read_text(encoding="utf-8")
+    assert "preDeployCommand: python -m alembic upgrade head" in render_content
+    # Non-sleeping paid plan (free tier sleeps after 15m)
+    assert "plan: starter" in render_content
+    assert "plan: free" not in render_content
