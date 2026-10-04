@@ -621,8 +621,36 @@
   - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
   - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns in database — Postgres fsck clear.
 - **Decisions Taken**:
-  - Utilizing inline `content` in tree entries ensures that any batch size (even 50+ files) requires strictly 3 write operations to GitHub (`POST /git/trees`, `POST /git/commits`, `PATCH /git/refs/heads/{branch}`), staying far below GitHub's secondary rate limit.
-  - Enforced `verify_private_repo` before every batch push to guarantee that conversations are never exported to publicly accessible GitHub repositories.
+
+---
+
+## Milestone GH2: Archive Layout & Deterministic Index Generation
+- **Status**: Completed
+- **Done When Criteria**:
+  - Implement standard archive layout: `README.md`, `index/threads.json`, `index/YYYY-MM.md`, and `{YYYY}/{MM}/{filename}_p{NN}.md`.
+  - Machine index `index/threads.json` deterministically maps thread metadata, turn counts, and sorted page paths.
+  - Monthly indexes `index/YYYY-MM.md` provide relative markdown links (`../YYYY/MM/...`) functional in GitHub Web and Obsidian.
+  - Golden files verify layout and format integrity.
+  - Differential verification: identical conversation rows in FileStore and PgStore produce 100% identical file paths and byte-for-byte identical content trees.
+- **Files & Functions**:
+  - `src/thread_save/export/layout.py`:
+    - `generate_readme()`: Deterministic README with conflict warnings, privacy notice, and squash instructions.
+    - `generate_threads_json(threads)`: Deterministic JSON machine index with sorted keys.
+    - `generate_monthly_index(year, month, threads, account_dir)`: Markdown monthly index with relative links.
+    - `generate_archive_tree(threads, account_dir)`: Assembles full dictionary of repo paths -> content.
+    - `extract_filestore_export_tree(vault_root, account)`: Extracts archive tree from local FileStore disk vault.
+    - `extract_pgstore_export_tree(store, account_id)`: Extracts archive tree from PostgreSQL database rows.
+  - `src/thread_save/export/__init__.py`: Exported layout functions.
+  - `tests/test_github_layout.py`: Golden tests for README, threads.json, monthly index, and differential parity test between FileStore and PgStore.
+- **Test Results**:
+  - `tests/test_github_layout.py`: 4 passed, 0 failed in 0.63s.
+  - Full pytest suite: 88 passed, 0 failed in 20.26s.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns in database — Postgres fsck clear.
+- **Decisions Taken**:
+  - Links in monthly indexes use relative `../{page_path}` syntax so cross-linking works seamlessly both when browsed directly on GitHub.com and when cloned into local markdown tools like Obsidian.
+  - Both FileStore and PgStore extractors reuse the canonical Plan v2 formatting logic to guarantee deterministic zero-diff parity.
+
 
 
 
