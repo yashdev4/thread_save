@@ -168,12 +168,13 @@ class PgThreadTxn:
         if not self._conn or self._is_tombstoned:
             return UpsertResult(action="no_op", n=n)
 
+        anchor = anchor.replace("\x00", "") if anchor else ""
         # Truncate over size limit (§3.4)
-        if len(body) > MAX_BODY_CHARS:
-            body = body[:MAX_BODY_CHARS]
+        canonical_body = canonical_v1(body)
+        if len(canonical_body) > MAX_BODY_CHARS:
+            canonical_body = canonical_body[:MAX_BODY_CHARS - 1] + "\n"
             fidelity = Fidelity.TRUNCATED
 
-        canonical_body = canonical_v1(body)
         body_hash = compute_content_hash(canonical_body)
         chars = len(canonical_body)
         body_bytes_len = len(canonical_body.encode("utf-8"))
@@ -523,7 +524,7 @@ class PgStore:
                 now = datetime.now(timezone.utc).astimezone()
                 tid = generate_thread_id()
                 slug = sanitize_slug(title_hint or "untitled", 20)
-                title = (title_hint or "").strip() or "Untitled Thread"
+                title = (title_hint or "").replace("\x00", "").strip() or "Untitled Thread"
                 delim = secrets.token_hex(2)
 
                 await conn.execute(

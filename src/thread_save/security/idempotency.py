@@ -41,6 +41,7 @@ def canonical_v1(text: str) -> str:
     if not text:
         return ""
     norm = unicodedata.normalize("NFC", text)
+    norm = norm.replace("\x00", "")
     norm = norm.replace("\r\n", "\n").replace("\r", "\n")
     norm = norm.rstrip("\n") + "\n"
     return norm

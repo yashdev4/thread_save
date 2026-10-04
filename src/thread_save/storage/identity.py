@@ -43,6 +43,7 @@ def normalise_anchor(text: str, max_chars: int = 80) -> str:
     if not text:
         return ""
     text = unicodedata.normalize("NFC", text)
+    text = text.replace("\x00", "")
     # Collapse all whitespace (including newlines) to single space
     text = " ".join(text.split())
     text = text.strip().lower()

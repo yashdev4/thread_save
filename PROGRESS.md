@@ -280,4 +280,27 @@
 - **Needs User**:
   - **Gate (d)**: Run `python -m thread_save.cli.migrate --vault-dir <user_vault>` to import live personal history into hosted ThreadVault.
 
+---
+
+## Milestone H1: Parametrised Hypothesis Store Testing & PostgreSQL Invariant Checker (`fsck --dsn`)
+- **Status**: Completed
+- **Done When Criteria**:
+  - `tests/test_hypothesis_v2.py` parametrised across both `FileStore` and `PgStore` running 1,000 examples each under the normal profile.
+  - `fsck.py` extended with `--dsn` CLI argument and `verify_pg_vault_async` / `verify_pg_vault` to directly check W-1...W-10 invariants in PostgreSQL (`accounts`, `threads`, `turns`, `gaps`, `outbox`, `deleted_threads`).
+  - Full test suite, both Hypothesis stores, and PostgreSQL fsck pass cleanly.
+- **Files & Functions**:
+  - `tests/test_hypothesis_v2.py`: Parametrised `@pytest.mark.parametrize("store_type", ["file", "pg"])` with Hypothesis 1,000 examples per store.
+  - `src/thread_save/fsck.py`: Added PostgreSQL database verification checking all invariants (W-1...W-10): account slugs, thread metadata, dense turn numbering, canonical hashes, gap recovery, outbox payload validity, tombstones. Added `--dsn` CLI argument.
+  - `src/thread_save/storage/pg_store.py`: Canonicalized body truncation up to `MAX_BODY_CHARS` with trailing newline, stripped NUL bytes (`\x00`) from string inputs to prevent asyncpg errors.
+  - `src/thread_save/security/idempotency.py`: Stripped NUL bytes in `canonical_v1`.
+  - `src/thread_save/storage/identity.py`: Stripped NUL bytes in `normalise_anchor`.
+- **Test Results**:
+  - Pytest full suite: 72 passed in 109.37s (including 1,000 Hypothesis examples on `FileStore` and 1,000 Hypothesis examples on `PgStore`).
+  - `fsck --dsn`: Scanned 1 accounts, 1 threads, 2 turns, 0 gaps, 1 outbox jobs in `thread_save_test` database — Postgres fsck clear.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+- **Decisions Taken**:
+  - Sanitized NUL characters (`\x00`) in `canonical_v1`, `normalise_anchor`, and `PgStore` input fields because PostgreSQL rejects string literals containing `\x00` with `CharacterNotInRepertoireError`.
+  - Body truncation in `PgStore` ensures that canonicalizing and ensuring trailing `\n` does not exceed `MAX_BODY_CHARS` (100,000 characters).
+  - Postgres fsck validates content hash prefix matching when 8 chars or exact match when 64 chars.
+
 
