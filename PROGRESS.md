@@ -597,9 +597,33 @@
   - `PROGRESS.md`: Added Gate (f) under "Needs User".
 - **Test Results**:
   - `tests/test_oauth.py`: 8 passed, 0 failed.
+
+---
+
+## Milestone GH1: Git Data API Target Implementation
+- **Status**: Completed
+- **Done When Criteria**:
+  - Git Data API target implements batch sequence: read head ref, read base tree, create tree with inline content/deletions, create commit, patch ref with `force: false`.
+  - Non-force ref update restarts automatically on 422 (moved-ref fast-forward race).
+  - Rate-limit headers tracked (`x-ratelimit-*`), with exponential backoff on secondary limits (403/429).
+  - Private-repo guard refuses push if repository is not strictly private.
+  - Mock tests verify: happy batch, 50-file batch uses exactly 3 write calls (zero blob creations), moved-ref race recovery, secondary limit backoff, and public repo refusal.
+- **Files & Functions**:
+  - `src/thread_save/export/github.py`:
+    - `GitHubDataApiTarget`: Implements Git Data API batching, rate-limit parsing, exponential backoff, private-repo guard, and non-force ref update with retry on 422.
+    - `GitHubFileEntry`, `GitHubBatchResult`: Dataclasses for batch file definitions and execution results.
+    - Exceptions: `PublicRepoRefusedError`, `SecondaryRateLimitError`, `MovedRefMaxRestartsError`, `PushProtectionError`, `GitHubConflictError`.
+  - `src/thread_save/export/__init__.py`: Exported new symbols.
+  - `tests/test_github_export.py`: Complete mock test suite (`MockGitHubApi` over `httpx.MockTransport`) covering happy batch, 50-file batch = 3 write calls, moved-ref race, secondary-limit 403, exhaustion raises, and public repo refusal.
+- **Test Results**:
+  - `tests/test_github_export.py`: 6 passed, 0 failed in 0.44s.
+  - Full pytest suite: 84 passed, 0 failed in 19.27s.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns in database — Postgres fsck clear.
 - **Decisions Taken**:
-  - Google accounts are keyed strictly on `oauth_sub = f"google:{sub}"`. An email address can be changed or reassigned by Google/Workspace admins; the `sub` claim is globally unique and immutable, guaranteeing account identity stability.
-  - Scopes are restricted strictly to `openid` and `email` to honor the principle of least privilege and eliminate friction during OAuth consent review.
+  - Utilizing inline `content` in tree entries ensures that any batch size (even 50+ files) requires strictly 3 write operations to GitHub (`POST /git/trees`, `POST /git/commits`, `PATCH /git/refs/heads/{branch}`), staying far below GitHub's secondary rate limit.
+  - Enforced `verify_private_repo` before every batch push to guarantee that conversations are never exported to publicly accessible GitHub repositories.
+
 
 
 
