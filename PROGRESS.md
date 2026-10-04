@@ -65,3 +65,28 @@
   - Integer fidelity ranking mapped directly between `Fidelity` enum `.rank` property and PostgreSQL `smallint` column.
   - `total_turns` in stats counts completed user and assistant turns excluding the provisional `Fidelity.OPEN` placeholder.
 
+### Milestone X3: Streamable HTTP Transport and Web API
+- **Status**: Completed
+- **Done When Criteria**:
+  - `POST /mcp` against running instance with test token saves a turn to `PgStore` and returns `ok: true`.
+  - Unauthenticated request returns 401.
+  - Invalid Origin returns 403.
+  - `/health` returns 200 with `status: ok` and `db: ok`.
+- **Files & Functions**:
+  - `src/thread_save/web/context.py`: `current_account_id` ContextVar scoping authenticated account IDs to asyncio request tasks.
+  - `src/thread_save/web/middleware.py`:
+    - `OriginValidatorMiddleware`: DNS rebinding protection verifying Host, Origin, and allowed CORS origins.
+    - `BodySizeLimitMiddleware`: Rejects requests exceeding 4 MB with 413 Payload Too Large.
+    - `RateLimitMiddleware`: In-memory leaky-bucket / window rate limiting (60 saves/min, 120 reads/min per account).
+    - `AccountContextMiddleware`: Bearer token extraction setting `current_account_id`.
+  - `src/thread_save/web/mcp_server.py`: `create_http_mcp_server` exposing `vault_save_turn`, `vault_backfill`, and `vault_find` with honest remote storage descriptions via FastMCP.
+  - `src/thread_save/web/app.py`: `create_app` mounting FastMCP's Streamable HTTP app at `/mcp`, integrating `/health` with asyncpg DB connectivity checks and commit hash reporting, with ASGI lifespan management.
+  - `tests/test_streamable_http.py`: 5 tests covering health check, origin validation, body size limit, rate limiting, and complete MCP turn-save protocol over HTTP.
+- **Test Results**:
+  - `tests/test_streamable_http.py`: 5 passed, 0 failed.
+  - Pytest full suite: 45 passed in 41.63s (including 1,000 Hypothesis examples in `tests/test_hypothesis_v2.py`).
+  - `run_tests.py`: 21 passed, 0 failed.
+  - fsck: Scanned 5 files across 2 threads (21 turns) in `vault_rich_fixture` - 0 errors, fsck clear.
+- **Decisions Taken**:
+  - FastMCP's ASGI router mounted at root `""` so its internal `/mcp` route is directly accessible as `POST /mcp` without redirect loops.
+  - Asyncpg connection pool initialized and health-checked in lifespan context manager.
