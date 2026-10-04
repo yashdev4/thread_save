@@ -671,9 +671,35 @@
   - Full pytest suite: 91 passed, 0 failed in 20.19s.
   - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
   - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns in database — Postgres fsck clear.
+
+---
+
+## Milestone GH4: Conflict Detection, Human-Edit Preservation & Dead-Lettering
+- **Status**: Completed
+- **Done When Criteria**:
+  - Human-edit detection via blob SHA: compares base tree blob SHA with `last_blob_sha`; skips overwriting files modified directly on GitHub.
+  - Push-protection handling: GitHub secret scanning rejection raises `PushProtectionError`, dead-letters the affected thread, and never re-sends it.
+  - Active conflicts and dead letters are tracked in exporter status and surfaced in CLI reports.
+  - Mock tests verify: human edits on GitHub are not overwritten, push-protection rejection triggers dead-lettering without retries, and conflicts/dead-letters display in reports.
+- **Files & Functions**:
+  - `src/thread_save/export/github.py`:
+    - Updated `push_batch` to parse and return created blob SHAs in `GitHubBatchResult.blob_shas`.
+    - Added base tree inspection for conflict checking against remote blob modifications.
+  - `src/thread_save/export/sync.py`:
+    - `GitHubBatchExporter`: Tracks `blob_shas`, `conflicts`, and `dead_letters`. Excludes dead-lettered threads from future export candidates. Attaches `last_blob_sha` to batch file entries.
+    - Added `get_status()` returning active conflicts, conflict details, dead letters, and repo size stats.
+  - `src/thread_save/report.py`:
+    - Added `format_export_status()` formatting active conflicts and dead-lettered threads in CLI reports.
+  - `tests/test_github_conflicts.py`: Full mock test suite verifying human-edit conflict skip, push-protection dead-lettering, and report formatting.
+- **Test Results**:
+  - `tests/test_github_conflicts.py`: 3 passed, 0 failed in 0.39s.
+  - Full pytest suite: 94 passed, 0 failed in 19.93s.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns in database — Postgres fsck clear.
 - **Decisions Taken**:
-  - The 30-minute settle window prevents polluting git history with an excessive number of transient turn-by-turn commits, while sticky closed page caching avoids re-uploading completed conversation pages.
-  - In-flight locking per repository prevents race conditions between overlapping worker poll cycles.
+  - Detecting remote edits via git blob SHAs ensures ThreadVault honors human edits made via the GitHub web UI, treating the human user as the authoritative writer.
+  - Dead-lettering push-protection rejected commits protects the service from getting blocked by GitHub abuse filters from repeatedly attempting to push detected secrets.
+
 
 
 

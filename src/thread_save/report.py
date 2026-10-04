@@ -100,7 +100,30 @@ def aggregate(events: list[dict]) -> dict:
     return results
 
 
-def print_report(results: dict) -> None:
+def format_export_status(export_status: dict) -> list[str]:
+    """Format GitHub export status including conflicts and dead letters."""
+    lines = []
+    conflicts = export_status.get("conflicts", [])
+    dead_letters = export_status.get("dead_letters", [])
+
+    if conflicts or dead_letters:
+        lines.append("\n  GitHub Archive Export Status")
+        lines.append("  " + "─" * 60)
+
+    if conflicts:
+        lines.append(f"    Active Conflicts (Human Edits Detected): {len(conflicts)}")
+        for c in conflicts:
+            lines.append(f"      - {c}")
+
+    if dead_letters:
+        lines.append(f"    Dead-Lettered Threads (Push Protection): {len(dead_letters)}")
+        for dl in dead_letters:
+            lines.append(f"      - {dl}")
+
+    return lines
+
+
+def print_report(results: dict, export_status: Optional[dict] = None) -> None:
     """Pretty-print the aggregated report."""
     print("=" * 70)
     print("ThreadVault Telemetry Report")
@@ -115,6 +138,11 @@ def print_report(results: dict) -> None:
         print(f"  {'─' * 60}")
         for k, v in metrics.items():
             print(f"    {k:30s} {v}")
+
+    if export_status:
+        for line in format_export_status(export_status):
+            print(line)
+
     print()
 
 
@@ -127,3 +155,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

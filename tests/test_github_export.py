@@ -138,8 +138,16 @@ class MockGitHubApi:
             self.write_calls.append({"method": "POST", "endpoint": "/git/trees", "payload": payload})
             self.tree_counter += 1
             new_sha = f"t{self.tree_counter:03d}_new_tree"
-            self.trees[new_sha] = {"sha": new_sha, "tree": payload.get("tree", [])}
-            return httpx.Response(201, headers=headers, json={"sha": new_sha})
+            import hashlib
+            tree_items = []
+            for item in payload.get("tree", []):
+                item_copy = dict(item)
+                if item_copy.get("content") is not None:
+                    blob_sha = f"b_{hashlib.sha1(item_copy['content'].encode('utf-8')).hexdigest()[:10]}"
+                    item_copy["sha"] = blob_sha
+                tree_items.append(item_copy)
+            self.trees[new_sha] = {"sha": new_sha, "tree": tree_items}
+            return httpx.Response(201, headers=headers, json={"sha": new_sha, "tree": tree_items})
 
         # 6. Create commit: POST /repos/{owner}/{repo}/git/commits (Write #2)
         if method == "POST" and path == f"/repos/{self.repo}/git/commits":
@@ -187,6 +195,29 @@ class MockGitHubApi:
             )
 
         return httpx.Response(404, headers=headers, json={"message": f"Endpoint not mocked: {method} {path}"})
+
+    def simulate_remote_edit(self, path: str, new_content: str):
+        """Simulate a human modifying a file directly on GitHub web UI."""
+        import hashlib
+        new_blob_sha = f"human_b_{hashlib.sha1(new_content.encode('utf-8')).hexdigest()[:10]}"
+        base_tree = self.trees[self.base_tree_sha]["tree"]
+        updated_tree = [item for item in base_tree if item.get("path") != path]
+        updated_tree.append({"path": path, "mode": "100644", "type": "blob", "sha": new_blob_sha})
+        self.tree_counter += 1
+        new_tree_sha = f"t{self.tree_counter:03d}_remote_edit"
+        self.trees[new_tree_sha] = {"sha": new_tree_sha, "tree": updated_tree}
+
+        self.commit_counter += 1
+        new_commit_sha = f"c{self.commit_counter:03d}_remote_edit"
+        self.commits[new_commit_sha] = {
+            "sha": new_commit_sha,
+            "tree": {"sha": new_tree_sha},
+            "message": "Direct edit on GitHub",
+            "parents": [self.head_commit_sha],
+        }
+        self.head_commit_sha = new_commit_sha
+        self.base_tree_sha = new_tree_sha
+
 
 
 @pytest.mark.asyncio

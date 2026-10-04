@@ -69,6 +69,8 @@ class GitHubBatchResult:
     files_deleted: int
     conflicts: list[str] = field(default_factory=list)
     restarts: int = 0
+    blob_shas: dict[str, str] = field(default_factory=dict)
+
 
 
 class GitHubDataApiTarget:
@@ -324,7 +326,13 @@ class GitHubDataApiTarget:
                     raise GitHubExportError(
                         f"Failed to create tree: {tree_resp.status_code} {tree_resp.text}"
                     )
-                new_tree_sha = tree_resp.json()["sha"]
+                tree_json = tree_resp.json()
+                new_tree_sha = tree_json["sha"]
+                returned_blob_shas = {
+                    item["path"]: item["sha"]
+                    for item in tree_json.get("tree", [])
+                    if "sha" in item and item["sha"]
+                }
 
                 # Step 4: Create commit (Write #2)
                 commit_payload = {
@@ -358,7 +366,9 @@ class GitHubDataApiTarget:
                         files_deleted=deleted_count,
                         conflicts=conflicts,
                         restarts=restarts,
+                        blob_shas=returned_blob_shas,
                     )
+
 
                 if patch_resp.status_code == 422:
                     # Non-fast-forward / ref moved concurrently
