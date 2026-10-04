@@ -12,6 +12,8 @@ Contains all protocol logic:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -423,6 +425,33 @@ class TurnService:
         account = account or self._config.default_account
         if hasattr(self._store, "get_thread_stats"):
             return self._store.get_thread_stats(thread_id) if thread_id else None
+        return None
+
+    async def stats_async(
+        self,
+        thread_id: str | None = None,
+        account: str | None = None,
+    ) -> Optional[dict]:
+        account = account or self._config.default_account
+        if not thread_id:
+            return None
+        if hasattr(self._store, "get_thread_stats"):
+            try:
+                res = self._store.get_thread_stats(thread_id, account)
+                if asyncio.iscoroutine(res):
+                    res = await res
+                if res:
+                    return res
+            except TypeError:
+                res = self._store.get_thread_stats(thread_id)
+                if asyncio.iscoroutine(res):
+                    res = await res
+                if res:
+                    return res
+        if hasattr(self._store, "stats"):
+            st = await self._store.stats(account, thread_id)
+            if st:
+                return st.model_dump()
         return None
 
     def pause_thread(self, thread_id: str, account: str | None = None) -> None:

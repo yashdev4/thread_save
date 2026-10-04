@@ -192,6 +192,7 @@ async def test_streamable_http_mcp_flow(app, pg_store):
             assert "vault_save_turn" in tool_names
             assert "vault_backfill" in tool_names
             assert "vault_find" in tool_names
+            assert "vault_stats" in tool_names
 
             # Verify honest remote description (§2 S8)
             save_desc = next(t["description"] for t in tools_data["result"]["tools"] if t["name"] == "vault_save_turn")
@@ -248,3 +249,24 @@ async def test_streamable_http_mcp_flow(app, pg_store):
             assert find_dict["ok"] is True
             assert find_dict["count"] >= 1
             assert any(t["thread_id"] == tid for t in find_dict["threads"])
+
+            # 5. Call tool: vault_stats over HTTP (Milestone H4)
+            stats_req = {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "vault_stats",
+                    "arguments": {
+                        "thread_id": tid,
+                    },
+                },
+            }
+            stats_resp = await client.post("/mcp", json=stats_req, headers=common_headers)
+            assert stats_resp.status_code == 200
+            lines = stats_resp.text.strip().splitlines()
+            data_line = next(line for line in lines if line.startswith("data:"))
+            stats_data = json.loads(data_line[len("data:"):].strip())
+            stats_dict = json.loads(stats_data["result"]["content"][0]["text"])
+            assert stats_dict["ok"] is True
+            assert stats_dict["total_turns"] == 1

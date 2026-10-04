@@ -355,7 +355,54 @@
   - `fsck --dsn`: Scanned 1 accounts, 1 threads, 2 turns, 0 gaps, 1 outbox jobs in `thread_save_test` database — Postgres fsck clear.
   - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
 - **Decisions Taken**:
-  - Non-browser HTTP clients do not send the `Origin` header by default. Restricting rejection solely to present, disallowed origins prevents breaking legitimate MCP client connections over Streamable HTTP while strictly maintaining CORS protection against browser-based CSRF and cross-origin tampering.
   - Host validation protects against DNS rebinding attacks while dynamically adapting to Fly.io and Render production deployments via environment variables.
+
+---
+
+## Milestone H4: Remote Tool Parity & Description Alignment
+- **Status**: Completed
+- **Done When Criteria**:
+  - `vault_stats` exposed over Streamable HTTP transport with parity to stdio.
+  - Tool annotations (`ToolAnnotations`) and server instructions (`_SERVER_INSTRUCTIONS`) match between stdio (`server.py`) and remote HTTP (`mcp_server.py`).
+  - Tool list verified: both stdio and HTTP expose identical 4 tools (`vault_save_turn`, `vault_backfill`, `vault_find`, `vault_stats`).
+  - Diff of tool list and descriptions documented.
+- **Files & Functions**:
+  - `src/thread_save/service.py`: Added `stats_async` to `TurnService` resolving thread stats across stores asynchronously.
+  - `src/thread_save/web/mcp_server.py`:
+    - Added `vault_stats` tool endpoint matching stdio annotations (`readOnlyHint=True, openWorldHint=False`).
+    - Aligned `_SERVER_INSTRUCTIONS`, `_BACKFILL_DESC`, `_FIND_DESC`, `_STATS_DESC` to stdio equivalents verbatim.
+    - Preserved honest remote scope for `vault_save_turn` ("Archive the conversation to the user's ThreadVault account." vs "Archive the conversation to the user's local ThreadVault (markdown files on this computer).").
+  - `tests/test_streamable_http.py`: Verified `tools/list` returns all 4 tools and verified HTTP tool call to `vault_stats`.
+- **Tool Parity & Description Diff**:
+  - **Tool List Comparison**:
+    - Stdio (`server.py`): `['vault_save_turn', 'vault_backfill', 'vault_find', 'vault_stats']`
+    - Remote (`mcp_server.py`): `['vault_save_turn', 'vault_backfill', 'vault_find', 'vault_stats']`
+    - Match: 100% Identical
+  - **Tool Annotations Comparison**:
+    - `vault_save_turn`: `readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False` (Match: Identical)
+    - `vault_backfill`: `readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False` (Match: Identical)
+    - `vault_find`: `readOnlyHint=True, openWorldHint=False` (Match: Identical)
+    - `vault_stats`: `readOnlyHint=True, openWorldHint=False` (Match: Identical)
+  - **Server Instructions Diff**:
+    - Match: 100% Identical
+  - **Description Unified Diff**:
+    ```diff
+    --- stdio/vault_save_turn
+    +++ remote/vault_save_turn
+    @@ -1,4 +1,4 @@
+    -Archive the conversation to the user's local ThreadVault (markdown files on this computer). The user enabled this connector to keep a record of their chats.
+    +Archive the conversation to the user's ThreadVault account. The user enabled this connector to keep a record of their chats.
+
+     Call this once at the start of each of your replies:
+     - user_query: the user's latest message, verbatim.
+    ```
+    (Note: `vault_backfill`, `vault_find`, and `vault_stats` descriptions are 100% identical between stdio and remote).
+- **Test Results**:
+  - `tests/test_streamable_http.py`: 5 passed, 0 failed.
+  - Full pytest suite: 74 passed in 111.09s (including both Hypothesis 1,000-example profiles).
+  - `fsck --dsn`: Scanned 1 accounts, 1 threads, 2 turns, 0 gaps, 1 outbox jobs in `thread_save_test` database — Postgres fsck clear.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+- **Decisions Taken**:
+  - Preserved the honest remote account context ("user's ThreadVault account") in `vault_save_turn` while matching all other descriptions and annotations to guarantee behavioral parity across stdio and HTTP clients.
 
 
