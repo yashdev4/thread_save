@@ -750,6 +750,53 @@
   - GitHub App tokens expire after 1 hour by GitHub design; caching with a 5-minute safety margin ensures seamless refreshes without auth failures.
   - All token formats (`github_pat_*`, `ghp_*`, `ghs_*`, etc.) are redacted globally from any error messages or target string representations before being raised or logged.
 
+---
+
+## Milestone GH7: Local Offload & GitHub Sync
+- **Status**: Completed
+- **Done When Criteria**:
+  - `_index/offloaded.json` maintains pointer records for threads offloaded to GitHub per schema (`repo`, `commit`, `pages`, `last_user_anchor`, `recent_turn_keys`, `max_n`, `delim`).
+  - Offload eligibility check: idle >= 14 days (`offload_after_days`), all pages exported to GitHub at known commit, no open gaps, and no unfinalised chunks.
+  - Offload frees disk files by removing page markdown files cleanly while registering pointer in `_index/offloaded.json`.
+  - Dedup optimization: turns matching pointer's `recent_turn_keys` are deduplicated immediately without rehydrating files.
+  - Active rehydration: resumed conversations fetch verified pages from GitHub at recorded commit, verify SHA-256 hashes, restore local files, and remove offload pointer.
+  - Fallback continuation: if GitHub is unreachable, rate limited, or hash verification fails during rehydration, gracefully creates a continuation thread (`continues: <orig_thread_id>`), preserves uninterrupted saving, and returns `ok: true`.
+  - `fsck` invariants: verifies offload pointer integrity, checks all referenced page hashes, and asserts zero stray/partial page files exist on disk for offloaded threads.
+  - Differential and regression suites pass cleanly with full 1,000 Hypothesis examples and fsck verification.
+- **Files & Functions**:
+  - `src/thread_save/models.py`: Added `continues: Optional[str] = None` to `ThreadMeta`.
+  - `src/thread_save/storage/formatter.py`: Added `continues` field emission in `format_front_matter`.
+  - `src/thread_save/config.py`: Added `offload_after_days: int = 14`, `offloaded_json_path`, and `export_manifest_path`.
+  - `src/thread_save/security/idempotency.py`: Added `SlotIndex.get_recent_turn_keys(thread_id, limit=10)`.
+  - `src/thread_save/export/github.py`: Added `fetch_file_content(path, ref, client)` and optional custom request headers support.
+  - `src/thread_save/export/offload.py`:
+    - `OffloadPointer`: Dataclass matching §1 G7 schema.
+    - `FileStoreExportManifest`: Manages `_index/export_manifest.json`.
+    - `OffloadIndex`: Manages `_index/offloaded.json` atomic reads and writes.
+    - `OffloadManager`: Manages eligibility inspection (`is_thread_offloadable`), thread offload execution (`offload_thread`), and thread rehydration (`rehydrate_thread`).
+  - `src/thread_save/export/__init__.py`: Exported offload classes and interfaces.
+  - `src/thread_save/storage/protocol.py`: Updated `Store.create_thread` to accept `continues: str | None = None`.
+  - `src/thread_save/storage/writer.py`: Updated `FileStore` with `_offload_mgr`, offload binding in `_bind_thread`, `continues` support in `create_thread`, and export tracking in `enqueue_export`.
+  - `src/thread_save/storage/pg_store.py`: Updated `PgStore.create_thread` to accept `continues: str | None = None`.
+  - `src/thread_save/service.py`: Updated `TurnService.save_turn`:
+    - Offload binding awareness.
+    - Dedup via `recent_turn_keys` without rehydration.
+    - Seamless rehydration on turn resume.
+    - Continuation thread fallback (`continues: <orig_id>`) on rehydration failure.
+  - `src/thread_save/fsck.py`: Enhanced `verify_vault` to validate `_index/offloaded.json` pointers, verify page hashes, and assert zero stray page files for offloaded threads.
+  - `tests/test_github_offload.py`: 5 tests verifying offload disk freeing, pointer dedup, clean rehydration, continuation fallback, and fsck offload validation.
+- **Test Results**:
+  - `tests/test_github_offload.py`: 5 passed, 0 failed in 0.51s.
+  - Full pytest suite: 111 passed, 0 failed in 253.79s.
+  - Hypothesis profile (`tests/test_hypothesis_v2.py`): 1,000 examples FileStore + 1,000 examples PgStore passed cleanly.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns in database — Postgres fsck clear.
+- **Decisions Taken**:
+  - Continuation thread fallback: Local thread saves should never fail or block because GitHub is temporarily unreachable or offline; if rehydration fails, creating a linked continuation thread (`continues: <orig_id>`) provides high-availability local storage with full provenance.
+  - Pointer dedup without rehydration: Claude frequently retries recent turns or sends duplicate requests; checking `recent_turn_keys` directly from the pointer allows zero-I/O duplicate responses without round-tripping to GitHub or rewriting local disk files.
+  - Offloaded threads have all page files removed from disk, leaving only the pointer entry in `_index/offloaded.json`. `fsck` strictly verifies that no orphaned or partial page markdown files remain on disk for an offloaded thread.
+
+
 
 
 

@@ -62,14 +62,13 @@ async def build_and_verify_fixture(target_dir: Path):
         thread_id=tid,
     )
 
-    # Recover turn 4 (Recovered turns)
+    # Recover turn 3 & 4 (Recovered turns)
     await svc.backfill(
         thread_id=tid,
-        turns=[{
-            "n": 4,
-            "user_query": "Missed question 4",
-            "assistant_response": "Missed answer 4",
-        }],
+        turns=[
+            {"n": 3, "user_query": "Missed question 3", "assistant_response": "Missed answer 3"},
+            {"n": 4, "user_query": "Missed question 4", "assistant_response": "Missed answer 4"},
+        ],
     )
 
     # Turn 6: Truncated turn (> 100,000 characters)

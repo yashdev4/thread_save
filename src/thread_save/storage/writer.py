@@ -325,7 +325,7 @@ class FileThreadTxn:
         self._staged_meta_updates.update(fields)
 
     async def enqueue_export(self) -> None:
-        pass
+        self._store._pending_export_threads.add(self._thread_id)
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         try:
@@ -390,6 +390,12 @@ class FileStore:
         self._slots = SlotIndex()
         self._gaps = GapTracker(lost_hours=config.gap_lost_hours)
         self._registry = _ThreadRegistry()
+        from thread_save.export.offload import OffloadManager
+        self._offload_mgr = OffloadManager(config)
+        self._offloaded_threads: dict[str, dict] = {
+            tid: ptr.to_dict() for tid, ptr in self._offload_mgr.offload_index.load().items()
+        }
+        self._pending_export_threads: set[str] = set()
 
     def _get_thread_lock(self, thread_id: str) -> asyncio.Lock:
         if thread_id not in self._file_locks:
@@ -400,12 +406,21 @@ class FileStore:
     def gap_tracker(self) -> GapTracker:
         return self._gaps
 
+    @property
+    def offload_manager(self) -> Any:
+        return self._offload_mgr
+
+    @property
+    def offloaded_threads(self) -> dict[str, dict]:
+        return dict(self._offloaded_threads)
+
     async def _create_thread(
         self,
         title_hint: str,
         tags: list[str] | None = None,
         account: str | None = None,
         client: str = "claude-desktop",
+        continues: str | None = None,
     ) -> tuple[str, PageState]:
         now = datetime.now(timezone.utc).astimezone()
         account = account or self._config.default_account
@@ -428,6 +443,7 @@ class FileStore:
             turn_range=[1, 0],
             bytes=0,
             tags=tags or [],
+            continues=continues,
         )
 
         file_path = resolve_thread_path(
@@ -463,8 +479,11 @@ class FileStore:
         prev_user_anchor: str | None,
         account: str,
     ) -> tuple[str | None, str]:
-        if thread_id and self._registry.exists(thread_id):
-            return thread_id, "id"
+        if thread_id:
+            if self._registry.exists(thread_id):
+                return thread_id, "id"
+            if thread_id in self._offloaded_threads:
+                return thread_id, "offloaded_id"
 
         if prev_user_anchor:
             norm_anchor = normalise_anchor(prev_user_anchor)
@@ -487,6 +506,16 @@ class FileStore:
                 if found and self._registry.exists(found):
                     return found, "anchor"
 
+                # Check offloaded candidates (§1 G7)
+                offloaded_matches = [
+                    tid for tid, ptr in self._offloaded_threads.items()
+                    if ptr.get("last_user_anchor") == norm_anchor
+                ]
+                if len(offloaded_matches) == 1:
+                    return offloaded_matches[0], "offloaded_anchor"
+                elif len(offloaded_matches) > 1:
+                    return None, "new"
+
         return None, "new"
 
     # ── Store Protocol Implementation (§4.1) ───────────────────────────
@@ -506,9 +535,10 @@ class FileStore:
         title_hint: str | None,
         tags: list[str] | None = None,
         client: str = "claude-desktop",
+        continues: str | None = None,
     ) -> ThreadMeta:
         tid, _ = await self._create_thread(
-            title_hint or "Untitled Thread", tags=tags, account=account_id, client=client
+            title_hint or "Untitled Thread", tags=tags, account=account_id, client=client, continues=continues
         )
         entry = self._registry.get(tid)
         assert entry is not None

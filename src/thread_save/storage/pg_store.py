@@ -523,6 +523,7 @@ class PgStore:
         title_hint: str | None,
         tags: list[str] | None = None,
         client: str = "claude-desktop",
+        continues: str | None = None,
     ) -> ThreadMeta:
         async with self.pool.acquire() as conn:
             acc_uuid = await self.resolve_account_uuid(conn, account_id)
@@ -569,6 +570,7 @@ class PgStore:
                     bytes=0,
                     tags=tags or [],
                     nonce=delim,
+                    continues=continues,
                 )
 
     def thread_txn(

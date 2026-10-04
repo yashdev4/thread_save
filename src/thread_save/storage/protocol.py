@@ -92,6 +92,7 @@ class Store(Protocol):
         title_hint: str | None,
         tags: list[str] | None = None,
         client: str = "claude-desktop",
+        continues: str | None = None,
     ) -> ThreadMeta:
         ...
 

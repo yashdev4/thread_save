@@ -187,3 +187,15 @@ class SlotIndex:
     def all_slot_keys(self, thread_id: str) -> list[SlotKey]:
         """List all known slot keys for a thread."""
         return list(self._get_slots(thread_id).keys())
+
+    def get_recent_turn_keys(self, thread_id: str, limit: int = 10) -> list[str]:
+        """Return the most recent user turn_keys for a thread (§1 G7)."""
+        slots = self._get_slots(thread_id)
+        user_items = [
+            (k.n, v.turn_key)
+            for k, v in slots.items()
+            if k.role == "user" and v.turn_key
+        ]
+        # Sort descending by turn number n
+        user_items.sort(key=lambda item: item[0], reverse=True)
+        return [tk for _, tk in user_items[:limit]]

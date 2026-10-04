@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 from pathlib import Path
 import re
@@ -36,10 +37,6 @@ def verify_vault(vault_root: str | Path) -> int:
     violations: list[str] = []
 
     all_pages = sorted(list(root.rglob("*_p[0-9][0-9].md")))
-    if not all_pages:
-        print("Error: 0 files scanned.")
-        return 1
-
     files_scanned = len(all_pages)
 
     # Group pages by thread_id
@@ -111,6 +108,46 @@ def verify_vault(vault_root: str | Path) -> int:
                 roles = known_turns[n]
                 if "user" not in roles:
                     violations.append(f"{tid}: Turn {n} missing user slot")
+
+    # Check offloaded threads (§1 G7)
+    offloaded_file = root / "_index" / "offloaded.json"
+    if offloaded_file.exists():
+        try:
+            raw_off = json.loads(offloaded_file.read_text(encoding="utf-8"))
+            if not isinstance(raw_off, dict):
+                violations.append("_index/offloaded.json: Root must be a JSON object mapping thread_id to pointer")
+                raw_off = {}
+        except Exception as e:
+            violations.append(f"_index/offloaded.json: Invalid JSON format: {e}")
+            raw_off = {}
+
+        for off_tid, ptr in raw_off.items():
+            if not isinstance(ptr, dict):
+                violations.append(f"{off_tid}: Offload pointer must be a dictionary")
+                continue
+
+            # Required fields per §1 G7: repo, commit, pages, last_user_anchor, recent_turn_keys, max_n, delim
+            required_fields = ["repo", "commit", "pages", "recent_turn_keys", "max_n", "delim"]
+            for f in required_fields:
+                if f not in ptr or (isinstance(ptr[f], str) and not ptr[f] and f in ("repo", "commit")):
+                    violations.append(f"{off_tid}: Offload pointer missing or empty required field '{f}'")
+
+            pages = ptr.get("pages")
+            if not isinstance(pages, dict) or not pages:
+                violations.append(f"{off_tid}: Offload pointer pages must be a non-empty mapping")
+            else:
+                for ppath, phash in pages.items():
+                    if not phash or not isinstance(phash, str):
+                        violations.append(f"{off_tid}: Offload pointer page '{ppath}' has invalid hash")
+
+            # Invariant: No stray partial page files on disk for an offloaded thread
+            if off_tid in thread_pages:
+                stray_names = [p.name for p in thread_pages[off_tid]]
+                violations.append(f"{off_tid}: Stray page files exist on disk for offloaded thread: {stray_names}")
+
+            threads_scanned += 1
+            files_scanned += len(pages) if isinstance(pages, dict) else 0
+            turns_scanned += int(ptr.get("max_n", 0))
 
     print(f"Scanned {files_scanned} files across {threads_scanned} threads ({turns_scanned} turns).")
 

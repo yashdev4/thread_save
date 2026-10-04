@@ -77,6 +77,7 @@ class ThreadMeta(BaseModel):
     open_turn: Optional[int] = None   # §4.3 — n of the unclosed last reply
     paused: bool = False
     nonce: str = ""              # §6.5 — per-conversation opt-out
+    continues: Optional[str] = None  # §1 G7 — continuation thread fallback if rehydration fails
 
 
 # ── Turn Data ──────────────────────────────────────────────────────────────

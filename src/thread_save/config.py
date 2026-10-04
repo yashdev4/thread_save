@@ -81,6 +81,9 @@ class VaultConfig:
     envelope_encryption_enabled: bool = False
     master_key: Optional[str] = None
 
+    # Local offload policy (§1 G7, Milestone GH7)
+    offload_after_days: int = 14
+
     # ── Derived paths ──────────────────────────────────────────────────
 
     @property
@@ -94,6 +97,16 @@ class VaultConfig:
     @property
     def active_json_path(self) -> Path:
         return self.index_dir / "active.json"
+
+    @property
+    def offloaded_json_path(self) -> Path:
+        """§1 G7 — Pointer file for cold threads offloaded to GitHub."""
+        return self.index_dir / "offloaded.json"
+
+    @property
+    def export_manifest_path(self) -> Path:
+        """§1 G7 — Local export manifest tracking exported page hashes and commits."""
+        return self.index_dir / "export_manifest.json"
 
     @property
     def assets_dir(self) -> Path:
@@ -196,5 +209,8 @@ def load_config() -> VaultConfig:
     if master_k := os.environ.get("THREADVAULT_MASTER_KEY"):
         kwargs["master_key"] = master_k
         kwargs["envelope_encryption_enabled"] = True
+
+    if offload_days_str := os.environ.get("THREADVAULT_OFFLOAD_AFTER_DAYS"):
+        kwargs["offload_after_days"] = int(offload_days_str)
 
     return VaultConfig(**kwargs)

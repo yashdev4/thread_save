@@ -156,15 +156,19 @@ class GitHubDataApiTarget:
         path: str,
         client: httpx.AsyncClient,
         json_data: Optional[dict[str, Any]] = None,
+        headers: Optional[dict[str, str]] = None,
     ) -> httpx.Response:
         url = f"{self.base_url}/{path.lstrip('/')}"
         retries = 0
+        req_headers = self._get_headers()
+        if headers:
+            req_headers.update(headers)
 
         while True:
             resp = await client.request(
                 method=method,
                 url=url,
-                headers=self._get_headers(),
+                headers=req_headers,
                 json=json_data,
             )
             self._update_ratelimits(resp.headers)
@@ -230,6 +234,38 @@ class GitHubDataApiTarget:
                 f"Repository {self.repo} is public! ThreadVault requires private repositories for export."
             )
         return data
+
+    async def fetch_file_content(
+        self,
+        path: str,
+        ref: str,
+        client: Optional[httpx.AsyncClient] = None,
+    ) -> str:
+        """Fetch file content from GitHub repository at a specific git ref/commit (§1 G7)."""
+        async def _do_fetch(c: httpx.AsyncClient) -> str:
+            resp = await self._request(
+                "GET",
+                f"/repos/{self.repo}/contents/{path}?ref={ref}",
+                c,
+                headers={"Accept": "application/vnd.github.raw+json"},
+            )
+            if resp.status_code != 200:
+                raise GitHubExportError(
+                    f"Failed to fetch {path} at ref {ref}: HTTP {resp.status_code}"
+                )
+            content_type = resp.headers.get("content-type", "")
+            if "application/json" in content_type:
+                data = resp.json()
+                if isinstance(data, dict) and data.get("encoding") == "base64" and "content" in data:
+                    import base64
+                    return base64.b64decode(data["content"]).decode("utf-8")
+            return resp.text
+
+        if client is not None:
+            return await _do_fetch(client)
+        else:
+            async with self._get_client() as c:
+                return await _do_fetch(c)
 
     async def push_batch(
         self,

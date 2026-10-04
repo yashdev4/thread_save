@@ -60,6 +60,8 @@ def format_front_matter(meta: ThreadMeta) -> str:
         "paused": meta.paused,
         "nonce": meta.nonce
     }
+    if getattr(meta, "continues", None):
+        data["continues"] = meta.continues
     yaml_str = yaml.dump(data, Dumper=QuotedDumper, sort_keys=False)
     return "---\n" + yaml_str + "---\n"
 

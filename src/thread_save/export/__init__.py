@@ -39,6 +39,14 @@ from thread_save.export.auth import (
     mask_token_preview,
     scrub_tokens,
 )
+from thread_save.export.offload import (
+    FileStoreExportManifest,
+    OffloadIndex,
+    OffloadManager,
+    OffloadPointer,
+    compute_page_hash,
+    verify_page_hash,
+)
 
 __all__ = [
     "ExportTarget",
@@ -69,6 +77,12 @@ __all__ = [
     "GitHubAppAuth",
     "scrub_tokens",
     "mask_token_preview",
+    "OffloadPointer",
+    "OffloadIndex",
+    "FileStoreExportManifest",
+    "OffloadManager",
+    "compute_page_hash",
+    "verify_page_hash",
 ]
 
 

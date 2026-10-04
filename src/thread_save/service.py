@@ -98,11 +98,13 @@ class TurnService:
         store: Store,
         config: VaultConfig | None = None,
         events: EventLogger | None = None,
+        github_target: Optional[Any] = None,
     ):
         self._store = store
         self._config = config or load_config()
         self._events = events
         self._chunks = _ChunkBuffer(self._config.chunk_timeout_seconds)
+        self._github_target = github_target
 
     @property
     def store(self) -> Store:
@@ -231,6 +233,48 @@ class TurnService:
         turn_key_input = f"{norm_prev}|{norm_query}|{prev_resp_hash}|{client_turn_str}"
         turn_key = compute_content_hash(turn_key_input)
 
+        # Check offloaded thread handling (§1 G7)
+        orig_bound_id = None
+        offloaded_threads = getattr(self._store, "offloaded_threads", {})
+        if bound_id in offloaded_threads:
+            offload_info = offloaded_threads[bound_id]
+            recent_keys = offload_info.get("recent_turn_keys", [])
+            # Dedup check via pointer's recent_turn_keys
+            if turn_key in recent_keys:
+                return {
+                    "ok": True,
+                    "thread_id": bound_id,
+                    "action": "no_op",
+                    "n": offload_info.get("max_n", 1),
+                    "binding": binding,
+                }
+
+            # Resumed conversation -> attempt rehydration
+            rehydrated = False
+            target = getattr(self, "_github_target", None) or getattr(self._store, "_github_target", None)
+            if target and hasattr(self._store, "offload_manager"):
+                rehydrated = await self._store.offload_manager.rehydrate_thread(
+                    self._store, bound_id, target
+                )
+
+            if rehydrated:
+                binding = "rehydrated"
+            else:
+                # Continuation thread fallback (§1 G7):
+                # If rehydrate fails (GitHub unreachable, token expired, hash mismatch),
+                # create a continuation thread with continues: <thread_id> in front matter,
+                # return ok: true. Never block save or corrupt partial restore.
+                logger.warning("Rehydration failed for %s; creating continuation thread", bound_id)
+                orig_bound_id = bound_id
+                cont_meta = await self._store.create_thread(
+                    account,
+                    title_hint=title_hint or offload_info.get("title") or "Continuation Thread",
+                    client=client,
+                    continues=orig_bound_id,
+                )
+                bound_id = cont_meta.thread_id
+                binding = "continuation"
+
         # 8. Single transaction for all writes (§4.1)
         async with self._store.thread_txn(account, bound_id) as txn:
             slots = await txn.load_slots()
@@ -323,6 +367,8 @@ class TurnService:
             "n": n,
             "binding": binding,
         }
+        if binding == "continuation" and orig_bound_id:
+            result["continues"] = orig_bound_id
 
         # Check for open gaps to report back
         if hasattr(self._store, "_gaps"):
