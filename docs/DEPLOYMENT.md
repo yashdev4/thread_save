@@ -91,22 +91,32 @@ To protect user conversation archives from accidental deletions or corruption:
 
 ## 5. Complete Environment Variables & Secrets Reference
 
-Every environment variable and secret required for production deployment:
+Every environment variable and secret required or supported for deployment:
 
 | Variable | Secret / Config | Default | Required in Prod | Purpose |
 |---|---|---|---|---|
-| `DATABASE_URL` | Secret | `postgresql://postgres:@127.0.0.1:5432/thread_save_test` | **Yes** | Primary PostgreSQL connection string (asyncpg/Alembic). |
-| `THREADVAULT_JWT_SECRET` | Secret | Ephemeral fallback | **Yes** | 32+ bytes secret used to sign and verify OAuth 2.1 JWT access tokens. Must persist across server restarts. |
-| `THREADVAULT_VIEWER_SECRET` | Secret | Built-in test secret | **Yes** | 32+ bytes secret for HMAC-SHA256 signing of viewer tokens (`/v/{token}`) and download tokens (`/download/{thread_id}.md`). |
-| `GOOGLE_CLIENT_ID` | Config | `""` | **Yes** | Google OAuth 2.0 Web Application Client ID for human sign-in. |
-| `GOOGLE_CLIENT_SECRET` | Secret | `""` | **Yes** | Google OAuth 2.0 Web Application Client Secret for token exchange. |
-| `THREADVAULT_ENFORCE_AUTH` | Config | `false` | **Yes** | When `true`, enforces OAuth 2.1 Bearer authentication on all MCP and REST endpoints. |
+| `DATABASE_URL` | Secret | `""` | **Required** | Primary PostgreSQL connection string (`postgresql://user:pass@host:5432/dbname`) for asyncpg connection pooling and Alembic schema migrations. |
+| `THREADVAULT_PUBLIC_URL` | Config | `""` | **Required** | Canonical public HTTPS base URL (e.g. `https://vault.example.com`). Used for OAuth issuer, metadata discovery (`/.well-known/*`), and Google OAuth callback redirect URI; never derived from request headers. |
+| `THREADVAULT_JWT_SECRET` | Secret | `""` | **Required** | 32+ bytes secret used to sign and verify OAuth 2.1 JWT access tokens. Must persist across server restarts. |
+| `THREADVAULT_VIEWER_SECRET` | Secret | `""` | **Required** | 32+ bytes secret for HMAC-SHA256 signing of viewer tokens (`/v/{token}`) and Markdown download tokens (`/download/{thread_id}.md`). |
+| `THREADVAULT_SERVER_KEY` | Secret | `""` | **Required** | Secret key for generating 4-character HMAC integrity tags in redaction masks (`[REDACTED:aws_access_key:xxxx]`). Required unless running locally; no built-in default key anywhere. |
+| `GOOGLE_CLIENT_ID` | Config | `""` | **Required** | Google Cloud Console OAuth 2.0 Web Application Client ID for human authentication. |
+| `GOOGLE_CLIENT_SECRET` | Secret | `""` | **Required** | Google Cloud Console OAuth 2.0 Web Application Client Secret for token exchange. |
+| `THREADVAULT_ENFORCE_AUTH` | Config | `true` | **Required** | Enforces OAuth 2.1 Bearer authentication on all MCP and REST endpoints. Fail-closed: defaults to `true`; server refuses to start with auth disabled unless bound to localhost. |
+| `THREADVAULT_ALLOWED_HOSTS` | Config | `localhost,127.0.0.1,testserver` | Optional | Comma-separated allowlist of valid `Host` header domains for anti-DNS rebinding and Host header validation. Fly.io and Render domains are auto-discovered. |
+| `THREADVAULT_SINGLE_TENANT` | Config | `false` | Optional | When `true`, allows remote GitHub archive export if and only if exactly 1 account exists in PostgreSQL. Refuses to run and logs warning otherwise. |
 | `THREADVAULT_ENVELOPE_KEY` | Secret | `""` | Optional | 32-byte hex-encoded Master Key for AES-256-GCM envelope encryption at rest. |
-| `THREADVAULT_SERVER_KEY` | Secret | `""` | Optional | Secret key for generating HMAC integrity tags in redaction masks (`[REDACTED:aws_access_key:xxxx]`). |
-| `THREADVAULT_VIEWER_TTL_SECONDS` | Config | `900` (15 min) | No | Time-to-live in seconds for viewer URLs and download links. |
-| `THREADVAULT_MODE` | Config | `turn_start` | No | Reliability protocol mode: `turn_start` (default) or `both`. |
-| `THREADVAULT_NUDGE` | Config | `off` | No | Prompt nudge mode: `off` (default) or `on`. |
-| `PORT` | Config | `8000` | No | HTTP port for Uvicorn web server. |
+| `THREADVAULT_VIEWER_TTL_SECONDS` | Config | `900` (15 min) | Optional | Time-to-live in seconds for viewer URLs and download links. |
+| `THREADVAULT_OFFLOAD_AFTER_DAYS` | Config | `14` | Optional | Days of inactivity before local cold threads are eligible for GitHub offload. |
+| `THREADVAULT_MODE` | Config | `turn_start` | Optional | Reliability protocol mode: `turn_start` (default) or `both`. |
+| `THREADVAULT_NUDGE` | Config | `off` | Optional | Prompt nudge mode: `off` (default) or `on`. |
+| `PORT` | Config | `8000` | Optional | HTTP port for Uvicorn web server. |
+| `ENVIRONMENT` / `APP_ENV` | Config | `development` | Optional | Environment mode (`production` vs `development`). Setting to `production` enforces all required variables and rejects localhost fallbacks. |
+
+### Startup Check & Safety Guarantees
+Upon server startup, `validate_startup_requirements()` enforces all production safety invariants before accepting traffic:
+1. **Fail-Closed Auth Check**: If `THREADVAULT_ENFORCE_AUTH=false`, the server checks whether it is strictly bound to localhost (`127.0.0.1`, `::1`, `localhost`). If bound to `0.0.0.0` or running in a production environment, the server halts and raises `RuntimeError("THREADVAULT_ENFORCE_AUTH cannot be disabled unless bound to localhost (127.0.0.1 / ::1)")`.
+2. **Missing Variable Check**: When running in a non-local / production environment, the startup check inspects all 7 required variables (`DATABASE_URL`, `THREADVAULT_PUBLIC_URL`, `THREADVAULT_JWT_SECRET`, `THREADVAULT_VIEWER_SECRET`, `THREADVAULT_SERVER_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`). If any required variable is unset or empty, the server halts immediately and explicitly lists every missing variable in the error message.
 
 ---
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import logging
+import os
 from typing import Optional
 
 from fastapi import FastAPI
@@ -21,6 +22,7 @@ from thread_save.web.middleware import (
     RateLimiter,
 )
 from thread_save.web.oauth import OAuthServer, create_oauth_router
+from thread_save.web.startup import get_public_url, validate_startup_requirements
 from thread_save.web.viewer import create_viewer_router
 
 logger = logging.getLogger("thread_save.web.app")
@@ -32,19 +34,38 @@ def create_app(
     config: Optional[VaultConfig] = None,
     rate_limiter: Optional[RateLimiter] = None,
     oauth_server: Optional[OAuthServer] = None,
-    enforce_auth: bool = False,
+    enforce_auth: Optional[bool] = None,
+    host: Optional[str] = None,
 ) -> FastAPI:
     cfg = config or load_config()
+
+    # Resolve enforce_auth (fail-closed default: True in production/server startup)
+    if enforce_auth is not None:
+        enforce_auth_eff = bool(enforce_auth)
+    elif "THREADVAULT_ENFORCE_AUTH" in os.environ:
+        auth_raw = os.environ["THREADVAULT_ENFORCE_AUTH"].strip().lower()
+        enforce_auth_eff = auth_raw in ("true", "1", "yes")
+    elif config is not None:
+        enforce_auth_eff = cfg.enforce_auth
+    else:
+        enforce_auth_eff = True
+
+    # Pre-deploy safety startup validation
+    validate_startup_requirements(host=host, enforce_auth=enforce_auth_eff)
+
     store = pg_store or PgStore()
     svc = service or TurnService(store, config=cfg)
     if oauth_server:
         oa_server = oauth_server
         if oa_server._pg_store is None and isinstance(store, PgStore):
             oa_server._pg_store = store
+        if oa_server.public_url is None:
+            oa_server.public_url = cfg.public_url
     else:
         oa_server = OAuthServer(
             jwt_secret=cfg.jwt_secret,
             pg_store=store if isinstance(store, PgStore) else None,
+            public_url=cfg.public_url,
         )
 
     mcp_server = create_http_mcp_server(svc)
@@ -52,6 +73,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Validate startup safety rules upon server boot
+        validate_startup_requirements(host=host, enforce_auth=enforce_auth_eff)
+
         # 1. Connect database pool
         if isinstance(store, PgStore):
             await store.connect()
@@ -74,7 +98,7 @@ def create_app(
     app.add_middleware(
         AccountContextMiddleware,
         oauth_server=oa_server,
-        enforce_auth=enforce_auth,
+        enforce_auth=enforce_auth_eff,
     )
     app.add_middleware(RateLimitMiddleware, limiter=rate_limiter)
     app.add_middleware(BodySizeLimitMiddleware)
@@ -125,3 +149,17 @@ def create_app(
     app.mount("", mcp_asgi)
 
     return app
+
+
+def run_server(host: str = "0.0.0.0", port: int = 8000, **kwargs):
+    """Run Uvicorn with platform proxy headers enabled (§pre-deploy safety)."""
+    import uvicorn
+    uvicorn.run(
+        "thread_save.web.app:create_app",
+        factory=True,
+        host=host,
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+        **kwargs,
+    )

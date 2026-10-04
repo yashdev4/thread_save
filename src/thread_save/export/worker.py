@@ -14,6 +14,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
+import os
 from typing import Any, Optional, Protocol
 
 import asyncpg
@@ -85,11 +86,17 @@ class GoogleDriveExportTarget:
 
 
 class GitHubExportTarget:
-    """GitHub exporter destination (Gate (c))."""
+    """GitHub exporter destination (Gate (c), Milestone GH1-GH6)."""
 
-    def __init__(self, repo: Optional[str] = None, token: Optional[str] = None):
+    def __init__(
+        self,
+        repo: Optional[str] = None,
+        token: Optional[str] = None,
+        store: Optional[PgStore] = None,
+    ):
         self.repo = repo
         self.token = token
+        self.store = store
 
     async def export_thread(
         self,
@@ -98,10 +105,27 @@ class GitHubExportTarget:
         markdown_content: str,
         filename: str,
     ) -> bool:
+        single_tenant = os.environ.get("THREADVAULT_SINGLE_TENANT", "").strip().lower() in ("true", "1", "yes")
+        if not single_tenant:
+            logger.warning(
+                "Remote GitHub export refused: requires THREADVAULT_SINGLE_TENANT=true. Skipping."
+            )
+            return False
+
+        if self.store is not None:
+            async with self.store.pool.acquire() as conn:
+                acc_count = await conn.fetchval("SELECT count(*) FROM accounts")
+            if acc_count != 1:
+                logger.warning(
+                    "Remote GitHub export refused: requires exactly one account in database (found %d). Skipping.",
+                    acc_count,
+                )
+                return False
+
         if not self.token or not self.repo:
             logger.info("GitHub export skipped (Live credentials required under Gate (c))")
             return True
-        # Production export implementation with GitHub Contents API
+        # Production export implementation with Git Data API
         return True
 
 
@@ -196,6 +220,21 @@ class OutboxWorker:
                 async with self.store.pool.acquire() as conn:
                     await conn.execute("DELETE FROM outbox WHERE thread_id = $1", tid)
                 continue
+
+            # Remote GitHub export guard (§pre-deploy safety)
+            if target_name == "github" or isinstance(target, GitHubExportTarget):
+                single_tenant_raw = os.environ.get("THREADVAULT_SINGLE_TENANT", "").strip().lower()
+                is_single_tenant = single_tenant_raw in ("true", "1", "yes")
+                async with self.store.pool.acquire() as conn:
+                    acc_count = await conn.fetchval("SELECT count(*) FROM accounts")
+                if not is_single_tenant or acc_count != 1:
+                    logger.warning(
+                        "Remote GitHub export refused: requires THREADVAULT_SINGLE_TENANT=true and exactly 1 account in database (THREADVAULT_SINGLE_TENANT=%s, accounts=%s). Skipping export for thread %s.",
+                        os.environ.get("THREADVAULT_SINGLE_TENANT", "false"),
+                        acc_count,
+                        tid,
+                    )
+                    continue
 
             filename = f"{tid}.md"
             try:

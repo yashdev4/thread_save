@@ -79,13 +79,47 @@ _BASE64_LONG = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z
 
 
 import hmac
+import os
+import secrets
 
-_DEFAULT_SERVER_KEY = b"threadvault_server_key"
+_local_ephemeral_server_key: bytes | None = None
 
 
-def _short_hash(value: str, server_key: bytes | str = _DEFAULT_SERVER_KEY) -> str:
+def get_server_key(server_key: bytes | str | None = None) -> bytes:
+    """Resolve HMAC server key for redaction masks (§7.2, pre-deploy safety).
+
+    No built-in default key anywhere.
+    THREADVAULT_SERVER_KEY is strictly required in non-local/production environments.
+    In local development/tests without an explicit key, generates an ephemeral random key per process.
+    """
+    if server_key is not None:
+        return server_key.encode("utf-8") if isinstance(server_key, str) else server_key
+
+    env_key = os.environ.get("THREADVAULT_SERVER_KEY")
+    if env_key and env_key.strip():
+        return env_key.strip().encode("utf-8")
+
+    is_prod = bool(
+        os.environ.get("ENVIRONMENT") == "production"
+        or os.environ.get("APP_ENV") == "production"
+        or os.environ.get("FLY_APP_NAME")
+        or os.environ.get("RENDER")
+        or os.environ.get("THREADVAULT_FORCE_PRODUCTION")
+    )
+    if is_prod:
+        raise RuntimeError(
+            "THREADVAULT_SERVER_KEY is required in non-local environments; no built-in default key permitted"
+        )
+
+    global _local_ephemeral_server_key
+    if _local_ephemeral_server_key is None:
+        _local_ephemeral_server_key = secrets.token_bytes(32)
+    return _local_ephemeral_server_key
+
+
+def _short_hash(value: str, server_key: bytes | str | None = None) -> str:
     """Generate a 4-char HMAC tag for traceability (W5 §3.4)."""
-    key_bytes = server_key.encode("utf-8") if isinstance(server_key, str) else server_key
+    key_bytes = get_server_key(server_key)
     return hmac.new(key_bytes, value.encode("utf-8"), hashlib.sha256).hexdigest()[:4]
 
 
@@ -102,12 +136,12 @@ def _shannon_entropy(data: str) -> float:
     return entropy
 
 
-def redact_text(text: str, server_key: bytes | str = _DEFAULT_SERVER_KEY) -> RedactionResult:
+def redact_text(text: str, server_key: bytes | str | None = None) -> RedactionResult:
     """Scan text for sensitive data and redact matches using HMAC tags.
 
     Args:
         text: The text to scan.
-        server_key: Server key for HMAC tagging.
+        server_key: Server key for HMAC tagging (optional, resolved via get_server_key).
 
     Returns:
         RedactionResult with redacted text, whether anything was changed,

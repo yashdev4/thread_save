@@ -52,5 +52,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Start command: run migrations then launch Uvicorn
-CMD ["sh", "-c", "python -m alembic upgrade head && python -m uvicorn thread_save.web.app:create_app --factory --host 0.0.0.0 --port ${PORT} --workers 2"]
+# Start command: run migrations then launch Uvicorn with proxy headers enabled
+CMD ["sh", "-c", "python -m alembic upgrade head && python -m uvicorn thread_save.web.app:create_app --factory --host 0.0.0.0 --port ${PORT} --workers 2 --proxy-headers --forwarded-allow-ips '*'"]

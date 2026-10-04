@@ -831,6 +831,41 @@
   - Live testing strictly requires external user credentials to prevent committing personal secrets or mutating unknown repositories. Delivering both a pytest integration suite and a standalone runner ensures users can test in CI or interactively on the command line.
   - External gate documented under Gate (g) in `PROGRESS.md` with explicit instructions in `docs/GITHUB_ARCHIVE_VERIFICATION.md`.
 
+---
+
+## Milestone Pre-Deploy Safety: Fail-Closed Auth, Server Key, Single-Tenant Export Guard & Public URL
+- **Status**: Completed
+- **Done When Criteria**:
+  - Auth fail-closed: `THREADVAULT_ENFORCE_AUTH` defaults to `true`; server refuses to start with auth disabled unless bound to localhost.
+  - Server key security: `THREADVAULT_SERVER_KEY` required unless running locally; zero built-in default keys anywhere (removed `_DEFAULT_SERVER_KEY`).
+  - Remote GitHub export guard: refuses to run unless `THREADVAULT_SINGLE_TENANT=true` and exactly 1 account exists in database; logs warning and skips otherwise. Test with two accounts proves nothing is exported.
+  - Canonical `THREADVAULT_PUBLIC_URL`: required in production, used for OAuth issuer, metadata discovery endpoints (`/.well-known/*`), and Google OAuth redirect URI; never derived from request headers.
+  - Uvicorn configured with proxy headers (`--proxy-headers --forwarded-allow-ips '*'`) for hosting platform proxies (Fly.io / Render).
+  - Allowed-hosts variable (`THREADVAULT_ALLOWED_HOSTS`) added to `DEPLOYMENT.md` table.
+  - Test verifies metadata issuer equals `THREADVAULT_PUBLIC_URL` when request arrives with internal `Host` and `http` scheme.
+  - Every environment variable re-listed in `docs/DEPLOYMENT.md` marked required/optional.
+  - Startup check `validate_startup_requirements()` explicitly names all missing required environment variables if startup fails.
+- **Files & Functions**:
+  - `src/thread_save/security/redactor.py`: Removed hardcoded `_DEFAULT_SERVER_KEY`; added `get_server_key()` requiring explicit `THREADVAULT_SERVER_KEY` in non-local environments.
+  - `src/thread_save/web/startup.py`: Added `validate_startup_requirements()`, `is_localhost_bound()`, and `get_public_url()`.
+  - `src/thread_save/config.py`: Added `public_url` and `enforce_auth` to `VaultConfig` and `load_config()`.
+  - `src/thread_save/web/oauth.py`: Used `get_public_url()` for OAuth issuer, metadata endpoints, and Google redirect URI. Added RFC 9704 `/.well-known/oauth-protected-resource`.
+  - `src/thread_save/web/middleware.py`: Updated `AccountContextMiddleware` to prevent auth bypass in production.
+  - `src/thread_save/export/worker.py`: Added single-tenant check in `OutboxWorker` and `GitHubExportTarget`.
+  - `src/thread_save/web/app.py`: Integrated startup validation in `create_app` and lifespan. Added `run_server` with proxy headers.
+  - `Dockerfile`: Added `--proxy-headers --forwarded-allow-ips '*'` to Uvicorn command.
+  - `docs/DEPLOYMENT.md`: Re-listed all 17 environment variables and secrets marked required/optional with startup check documentation.
+  - `tests/test_predeploy_safety.py`: 5 test cases verifying all safety invariants.
+- **Test Results**:
+  - `tests/test_predeploy_safety.py`: 5 passed in 1.62s.
+  - Full pytest suite: 116 passed, 4 deselected in 271.71s.
+  - Hypothesis 1,000-example profiles: passed against FileStore and PgStore in 274.46s.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+  - `fsck --dsn`: Scanned 1001 accounts, 1002 threads, 12860 turns, 3357 gaps, 1002 outbox jobs in database — Postgres fsck clear.
+- **Decisions Taken**:
+  - `validate_startup_requirements()` prioritizes production environment markers (`ENVIRONMENT=production`, `FLY_APP_NAME`, `RENDER`) over loopback IPs, ensuring auth cannot be disabled in cloud deployments even behind reverse proxies.
+  - Remote GitHub export guard enforces single tenancy at the database level (`SELECT count(*) FROM accounts == 1`), completely eliminating multi-tenant cross-account repo overwrite risks.
+
 
 
 

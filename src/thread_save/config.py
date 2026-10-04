@@ -81,6 +81,12 @@ class VaultConfig:
     envelope_encryption_enabled: bool = False
     master_key: Optional[str] = None
 
+    # Public URL for OAuth issuer & metadata (§pre-deploy safety)
+    public_url: str = "http://localhost:8000"
+
+    # Enforce OAuth authentication (fail-closed default in load_config / server startup)
+    enforce_auth: bool = False
+
     # Local offload policy (§1 G7, Milestone GH7)
     offload_after_days: int = 14
 
@@ -209,6 +215,12 @@ def load_config() -> VaultConfig:
     if master_k := os.environ.get("THREADVAULT_MASTER_KEY"):
         kwargs["master_key"] = master_k
         kwargs["envelope_encryption_enabled"] = True
+
+    if pub_url := os.environ.get("THREADVAULT_PUBLIC_URL"):
+        kwargs["public_url"] = pub_url.strip().rstrip("/")
+
+    auth_val = os.environ.get("THREADVAULT_ENFORCE_AUTH", "true").strip().lower()
+    kwargs["enforce_auth"] = auth_val in ("true", "1", "yes")
 
     if offload_days_str := os.environ.get("THREADVAULT_OFFLOAD_AFTER_DAYS"):
         kwargs["offload_after_days"] = int(offload_days_str)

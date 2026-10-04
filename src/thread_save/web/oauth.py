@@ -101,6 +101,7 @@ class OAuthServer:
         jwt_secret: Optional[str] = None,
         pool: Optional[asyncpg.Pool] = None,
         pg_store: Optional[Any] = None,
+        public_url: Optional[str] = None,
     ):
         # Load signing key from secret config, never generate it at startup
         secret = jwt_secret or os.environ.get("THREADVAULT_JWT_SECRET") or os.environ.get("JWT_SECRET_KEY") or JWT_SECRET_DEFAULT
@@ -110,12 +111,20 @@ class OAuthServer:
 
         self._pool = pool
         self._pg_store = pg_store
+        self.public_url = public_url.strip().rstrip("/") if public_url else None
 
         # In-memory fallbacks when no pool is configured (e.g. lightweight isolated unit tests)
         self.clients: dict[str, ClientRegistration] = {}
         self.auth_codes: dict[str, AuthCode] = {}
         self.refresh_tokens: dict[str, RefreshTokenRecord] = {}
         self._upstream_accounts: dict[str, tuple[str, str]] = {}
+
+    def get_public_url(self) -> str:
+        """Resolve canonical THREADVAULT_PUBLIC_URL for OAuth endpoints."""
+        if self.public_url:
+            return self.public_url
+        from thread_save.web.startup import get_public_url
+        return get_public_url()
 
     @property
     def pool(self) -> Optional[asyncpg.Pool]:
@@ -516,17 +525,27 @@ def create_oauth_router(oauth_server: OAuthServer) -> APIRouter:
     @router.get("/.well-known/oauth-authorization-server")
     @router.get("/.well-known/openid-configuration")
     async def oauth_discovery(request: Request):
-        base_url = str(request.base_url).rstrip("/")
+        public_url = oauth_server.get_public_url()
         return {
-            "issuer": base_url,
-            "authorization_endpoint": f"{base_url}/oauth/authorize",
-            "token_endpoint": f"{base_url}/oauth/token",
-            "registration_endpoint": f"{base_url}/oauth/register",
-            "revocation_endpoint": f"{base_url}/oauth/revoke",
+            "issuer": public_url,
+            "authorization_endpoint": f"{public_url}/oauth/authorize",
+            "token_endpoint": f"{public_url}/oauth/token",
+            "registration_endpoint": f"{public_url}/oauth/register",
+            "revocation_endpoint": f"{public_url}/oauth/revoke",
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+            "scopes_supported": ["vault"],
+        }
+
+    # Protected Resource Metadata (RFC 9704)
+    @router.get("/.well-known/oauth-protected-resource")
+    async def oauth_protected_resource(request: Request):
+        public_url = oauth_server.get_public_url()
+        return {
+            "resource": public_url,
+            "authorization_servers": [public_url],
             "scopes_supported": ["vault"],
         }
 
@@ -631,8 +650,8 @@ def create_oauth_router(oauth_server: OAuthServer) -> APIRouter:
             google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
             google_button_html = ""
             if google_client_id:
-                base_url = str(request.base_url).rstrip("/")
-                cb_url = urllib.parse.quote_plus(f"{base_url}/oauth/callback/google")
+                public_url = oauth_server.get_public_url()
+                cb_url = urllib.parse.quote_plus(f"{public_url}/oauth/callback/google")
                 flow_state = urllib.parse.quote_plus(
                     json.dumps({
                         "client_id": client_id,
@@ -772,7 +791,7 @@ def create_oauth_router(oauth_server: OAuthServer) -> APIRouter:
                         "code": code,
                         "client_id": google_client_id,
                         "client_secret": google_client_secret,
-                        "redirect_uri": flow_data.get("redirect_uri", ""),
+                        "redirect_uri": f"{oauth_server.get_public_url()}/oauth/callback/google",
                         "grant_type": "authorization_code",
                     },
                 )
