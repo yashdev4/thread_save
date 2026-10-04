@@ -82,6 +82,21 @@ async def test_origin_validation(app):
             assert r4.status_code == 403
             assert "not allowed" in r4.json()["detail"]
 
+            # 5. Request with NO Origin header is accepted (Milestone H3)
+            r5 = await client.get("/health")
+            assert r5.status_code == 200
+            assert r5.json()["status"] == "healthy"
+
+            # 6. Request with allowed Host header is accepted
+            r6 = await client.get("/health", headers={"Host": "localhost:8000"})
+            assert r6.status_code == 200
+
+            # 7. Request with disallowed Host header is rejected with 403 (Milestone H3)
+            r7 = await client.get("/health", headers={"Host": "evil.hacker.com"})
+            assert r7.status_code == 403
+            assert "host" in r7.json()["detail"].lower()
+            assert "not allowed" in r7.json()["detail"].lower()
+
 
 @pytest.mark.asyncio
 async def test_body_size_limit(app):

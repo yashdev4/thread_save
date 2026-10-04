@@ -78,7 +78,10 @@ def create_app(
     )
     app.add_middleware(RateLimitMiddleware, limiter=rate_limiter)
     app.add_middleware(BodySizeLimitMiddleware)
-    app.add_middleware(OriginValidatorMiddleware)
+    app.add_middleware(
+        OriginValidatorMiddleware,
+        allowed_hosts=cfg.allowed_hosts,
+    )
 
     # OAuth 2.1 endpoints (discovery, DCR, PKCE authorization, token issuance & refresh)
     app.include_router(create_oauth_router(oa_server))

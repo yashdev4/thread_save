@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Callable
+from typing import Callable, Optional, Sequence
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -29,15 +29,48 @@ def is_allowed_origin(origin: str) -> bool:
 
 
 class OriginValidatorMiddleware(BaseHTTPMiddleware):
-    """Validate request Origin header against allowlist (§2, S8)."""
+    """Validate request Host and Origin headers against allowlist (§2 S8, Milestone H3).
+
+    Rules:
+    - Host header: validated against allowed_hosts allowlist (from config including deployed domains).
+    - Origin header:
+      - If absent: ACCEPT request (non-browser clients, mobile apps, curl, MCP desktop).
+      - If present: ACCEPT only if matching allowed origins (claude.ai, claude.com, localhost); REJECT otherwise.
+    """
+
+    def __init__(
+        self,
+        app,
+        allowed_hosts: Optional[Sequence[str]] = None,
+        allowed_origins: Optional[Sequence[str]] = None,
+    ):
+        super().__init__(app)
+        self.allowed_hosts = set(
+            h.lower() for h in (allowed_hosts or ["localhost", "127.0.0.1", "testserver"])
+        )
+        self.allowed_origins = allowed_origins
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # 1. Host header validation
+        host_header = request.headers.get("host")
+        if host_header and self.allowed_hosts and "*" not in self.allowed_hosts:
+            hostname = host_header.split(":")[0].strip().lower()
+            if hostname not in self.allowed_hosts and not any(
+                hostname.endswith("." + ah) for ah in self.allowed_hosts
+            ):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": f"Host '{host_header}' is not allowed"},
+                )
+
+        # 2. Origin header validation
         origin = request.headers.get("origin")
         if origin and not is_allowed_origin(origin):
             return JSONResponse(
                 status_code=403,
                 content={"detail": f"Origin '{origin}' is not allowed"},
             )
+
         return await call_next(request)
 
 

@@ -71,6 +71,9 @@ class VaultConfig:
     # OAuth JWT Signing Key (Milestone H2) - loaded from secret config, never generated at startup
     jwt_secret: str = "threadvault-default-jwt-secret-key-change-in-prod-32bytes-min!"
 
+    # Allowed hosts for Host header validation (Milestone H3)
+    allowed_hosts: tuple[str, ...] = ("localhost", "127.0.0.1", "testserver")
+
     # ── Derived paths ──────────────────────────────────────────────────
 
     @property
@@ -159,5 +162,22 @@ def load_config() -> VaultConfig:
             )
         jwt_secret_val = "threadvault-default-jwt-secret-key-change-in-prod-32bytes-min!"
     kwargs["jwt_secret"] = jwt_secret_val
+
+    # Host allowlist (§H3)
+    hosts = ["localhost", "127.0.0.1", "testserver"]
+    if env_hosts := os.environ.get("THREADVAULT_ALLOWED_HOSTS"):
+        for h in env_hosts.split(","):
+            h = h.strip().lower()
+            if h and h not in hosts:
+                hosts.append(h)
+    if fly_app := os.environ.get("FLY_APP_NAME"):
+        fly_domain = f"{fly_app.strip().lower()}.fly.dev"
+        if fly_domain not in hosts:
+            hosts.append(fly_domain)
+    if render_domain := os.environ.get("RENDER_EXTERNAL_HOSTNAME"):
+        render_domain = render_domain.strip().lower()
+        if render_domain not in hosts:
+            hosts.append(render_domain)
+    kwargs["allowed_hosts"] = tuple(hosts)
 
     return VaultConfig(**kwargs)

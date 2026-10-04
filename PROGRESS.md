@@ -334,4 +334,28 @@
   - Auth code consumption uses atomic `DELETE FROM oauth_auth_codes WHERE code = $1 RETURNING ...` to enforce single-use semantics directly in the database.
   - Refresh token rotation uses atomic `DELETE FROM oauth_refresh_tokens WHERE token = $1 AND revoked = false RETURNING ...` preventing token replay attacks.
 
+---
+
+## Milestone H3: Origin and Host Header Handling
+- **Status**: Completed
+- **Done When Criteria**:
+  - Requests with no `Origin` header are accepted (supporting CLI, curl, desktop and native mobile clients).
+  - Only present, disallowed `Origin` headers are rejected with 403 Forbidden.
+  - Request `Host` header is validated against an allowlist loaded from configuration, including deployed domains (`FLY_APP_NAME.fly.dev`, `RENDER_EXTERNAL_HOSTNAME`, `THREADVAULT_ALLOWED_HOSTS`, `localhost`, `127.0.0.1`, `testserver`).
+  - Disallowed `Host` header is rejected with 403 Forbidden.
+  - Test suite verifies acceptance of no-Origin requests and rejection of unauthorized hosts.
+- **Files & Functions**:
+  - `src/thread_save/config.py`: Added `allowed_hosts` to `VaultConfig` and populated from `THREADVAULT_ALLOWED_HOSTS`, `FLY_APP_NAME`, and `RENDER_EXTERNAL_HOSTNAME` in `load_config()`.
+  - `src/thread_save/web/middleware.py`: Updated `OriginValidatorMiddleware` with Host header validation against `allowed_hosts` and explicit acceptance of absent `Origin` headers.
+  - `src/thread_save/web/app.py`: Wired `cfg.allowed_hosts` into `OriginValidatorMiddleware`.
+  - `tests/test_streamable_http.py`: Added test assertions verifying no-Origin requests succeed (200), allowed Host headers succeed (200), and disallowed Host headers fail with 403.
+- **Test Results**:
+  - `tests/test_streamable_http.py`: 5 passed, 0 failed.
+  - Full pytest suite: 74 passed in 128.21s (including both Hypothesis 1,000-example profiles).
+  - `fsck --dsn`: Scanned 1 accounts, 1 threads, 2 turns, 0 gaps, 1 outbox jobs in `thread_save_test` database — Postgres fsck clear.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+- **Decisions Taken**:
+  - Non-browser HTTP clients do not send the `Origin` header by default. Restricting rejection solely to present, disallowed origins prevents breaking legitimate MCP client connections over Streamable HTTP while strictly maintaining CORS protection against browser-based CSRF and cross-origin tampering.
+  - Host validation protects against DNS rebinding attacks while dynamically adapting to Fly.io and Render production deployments via environment variables.
+
 
