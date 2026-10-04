@@ -36,8 +36,6 @@ DEFAULT_VIEWER_TTL_SECONDS = int(
     os.environ.get("THREADVAULT_VIEWER_TTL_SECONDS", "900")
 )  # 15 minutes default (§H5)
 
-_consumed_download_tokens: set[str] = set()
-
 
 def create_viewer_token(
     thread_id: str,
@@ -282,12 +280,6 @@ def create_viewer_router(
                         status_code=403,
                         detail="Token thread ID mismatch: token cannot be reused across threads",
                     )
-                sig = token.split(".")[1] if "." in token else token
-                if sig in _consumed_download_tokens:
-                    raise HTTPException(
-                        status_code=403,
-                        detail="Token already consumed: token cannot be reused across downloads",
-                    )
                 target_account = tok_acc
             except ValueError as e:
                 raise HTTPException(status_code=403, detail=f"Invalid token: {e}")
@@ -311,10 +303,6 @@ def create_viewer_router(
         except Exception as e:
             logger.error("Error rendering thread markdown for download: %s", e)
             raise HTTPException(status_code=500, detail="Failed to render markdown")
-
-        if token:
-            sig = token.split(".")[1] if "." in token else token
-            _consumed_download_tokens.add(sig)
 
         return Response(
             content=md_content,

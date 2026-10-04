@@ -324,13 +324,13 @@ async def test_h5_viewer_link_expiry_and_reuse_prevention(pg_store):
             assert cross_dl.status_code == 403
             assert "mismatch" in cross_dl.json()["detail"].lower() or "cannot be reused across threads" in cross_dl.json()["detail"].lower()
 
-            # 4. Download reuse prevention:
+            # 4. Repeated downloads within 15m TTL allowed per F2 (pre-signed URL pattern):
             # First download with token_1 succeeds (200 OK)
             dl_resp_1 = await client.get(f"/download/{tid_1}.md?token={token_1}")
             assert dl_resp_1.status_code == 200
             assert "Thread 1 query" in dl_resp_1.text
 
-            # Second download with the EXACT SAME token_1 fails with 403 (cannot be reused across downloads)
+            # Repeated download with the same valid token_1 succeeds within the 15m window
             dl_resp_2 = await client.get(f"/download/{tid_1}.md?token={token_1}")
-            assert dl_resp_2.status_code == 403
-            assert "consumed" in dl_resp_2.json()["detail"].lower() or "cannot be reused across downloads" in dl_resp_2.json()["detail"].lower()
+            assert dl_resp_2.status_code == 200
+            assert "Thread 1 query" in dl_resp_2.text
