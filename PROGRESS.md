@@ -174,3 +174,32 @@
 - **Decisions Taken**:
   - `purge_expired_threads` records tombstones upon expiration so subsequent delayed calls are safely rejected (W-10).
   - Retention threshold is evaluated per-account using `accounts.retention_days`.
+
+### Milestone X7: Exporter Worker (Outbox, Debounce, Hash-based Idempotency)
+- **Status**: Completed (Automated verification complete; External Gate (c) recorded under Needs User)
+- **Done When Criteria**:
+  - Save turns enqueue export tasks transactionally into PostgreSQL `outbox` table with 2-minute debounce window (W-11).
+  - Subsequent turn saves within debounce window extend the debounce without duplicate jobs.
+  - Exporter worker processes due batches asynchronously, rendering canonical Markdown and exporting to target backends.
+  - Hash-based idempotency avoids redundant uploads if thread markdown hash is unchanged.
+  - Export failures back off exponentially without crashing worker or corrupting outbox.
+  - Decoupled save path: exporter failure, offline status, or sudden termination NEVER impacts save path or client requests.
+- **Files & Functions**:
+  - `src/thread_save/export/worker.py`:
+    - `ExportTarget`: Protocol for external destinations.
+    - `MockExportTarget`: In-memory destination recording payloads and simulating network faults.
+    - `GoogleDriveExportTarget`: Exporter skeleton for Google Drive API v3.
+    - `GitHubExportTarget`: Exporter skeleton for GitHub Contents API.
+    - `OutboxWorker`: Background worker polling due jobs, executing single-statement queries, rendering canonical projections, performing hash idempotency checks, and handling retries.
+  - `src/thread_save/export/__init__.py`: Export package interface.
+  - `tests/test_exporter.py`: 3 tests verifying debounce enqueuing, asynchronous export drainage, hash-based deduplication, exponential backoff, and total isolation between exporter lifecycle and save operations.
+- **Test Results**:
+  - `tests/test_exporter.py`: 3 passed, 0 failed.
+  - Pytest full suite: 61 passed in 47.64s (including 1,000 Hypothesis examples in `tests/test_hypothesis_v2.py`).
+  - `run_tests.py`: 21 passed, 0 failed.
+  - fsck: Scanned 5 files across 2 threads (21 turns) in `vault_rich_fixture` - 0 errors, fsck clear.
+- **Decisions Taken**:
+  - Outbox processing separates job selection from rendering and target upload to prevent row-locking contention across concurrent transactions.
+  - Debounce window is set to 2 minutes (`interval '2 minutes'`) per spec §2 S2.
+- **Needs User**:
+  - **Gate (c)**: Real Google Drive / GitHub OAuth credentials for live production upload.
