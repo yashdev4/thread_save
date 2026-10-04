@@ -21,6 +21,7 @@ from thread_save.web.middleware import (
     RateLimiter,
 )
 from thread_save.web.oauth import OAuthServer, create_oauth_router
+from thread_save.web.viewer import create_viewer_router
 
 logger = logging.getLogger("thread_save.web.app")
 
@@ -74,6 +75,10 @@ def create_app(
 
     # OAuth 2.1 endpoints (discovery, DCR, PKCE authorization, token issuance & refresh)
     app.include_router(create_oauth_router(oa_server))
+
+    # Thread viewer and .md download endpoints (§4, Milestone X5)
+    if isinstance(store, PgStore):
+        app.include_router(create_viewer_router(store))
 
     # Health check endpoint (§4.4, Milestone X8 prerequisite)
     @app.get("/health")

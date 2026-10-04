@@ -119,3 +119,29 @@
   - Pre-registered default Claude client for standard connector flows while supporting RFC 7591 DCR.
 - **Needs User**:
   - **Gate (b)**: Live OAuth interaction with Claude web (Connector added on claude.ai web; login flow completes; token refresh observed in production).
+
+### Milestone X5: Renderer, Signed Viewer Links, and Markdown Download
+- **Status**: Completed
+- **Done When Criteria**:
+  - Rendered Markdown output byte-identical to `FileStore` output for the same turns.
+  - HMAC signed viewer links in `vault_find` hits (`/v/{signed_token}`).
+  - Web viewer endpoint renders clean HTML transcript with role badges, timestamps, fidelity, and download button.
+  - Raw `.md` download endpoint (`/download/{thread_id}.md`) returns full canonical markdown with `Content-Disposition: attachment`.
+- **Files & Functions**:
+  - `src/thread_save/storage/renderer.py`: `render_thread_markdown` projecting PostgreSQL rows into canonical Plan v2 Markdown (YAML front matter + HTML delimited turn slots).
+  - `src/thread_save/web/viewer.py`:
+    - `create_viewer_token` & `verify_viewer_token`: HMAC-SHA256 URL-safe token signing and verification with expiration enforcement.
+    - `create_viewer_router`:
+      - `GET /v/{token}`: Renders HTML conversation viewer.
+      - `GET /download/{thread_id}.md`: Streams canonical Plan v2 Markdown file.
+  - `src/thread_save/web/mcp_server.py`: Updated `vault_find` to attach `viewer_url` and `download_url` to each matching thread hit.
+  - `src/thread_save/web/app.py`: Mounted viewer router into FastAPI application.
+  - `tests/test_viewer.py`: 4 tests verifying byte-identical differential rendering against FileStore, HMAC token cryptographic integrity, HTML viewer endpoint, and `.md` download endpoint.
+- **Test Results**:
+  - `tests/test_viewer.py`: 4 passed, 0 failed.
+  - Pytest full suite: 53 passed in 45.19s (including 1,000 Hypothesis examples in `tests/test_hypothesis_v2.py`).
+  - `run_tests.py`: 21 passed, 0 failed.
+  - fsck: Scanned 5 files across 2 threads (21 turns) in `vault_rich_fixture` - 0 errors, fsck clear.
+- **Decisions Taken**:
+  - Canonical renderer validates thread existence under tenant RLS before rendering turns.
+  - Download endpoint accepts both signed HMAC tokens (for external browser links) and active Bearer JWT auth.
