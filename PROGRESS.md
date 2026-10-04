@@ -31,3 +31,37 @@
 - **Decisions Taken**:
   - Strict preservation of indentation in `canonical_v1` as required by spec so indented vs unindented code produce distinct hashes.
   - FileStore implements `Store` protocol and `ThreadTxn` with atomic writes, in-memory transaction buffer, and directory fsync.
+
+---
+
+## Milestone X2: PgStore Implementation & Verification
+- **Status**: Completed
+- **Done When Condition**: Suite passes on both stores (FileStore and PgStore), differential markdown test passes, fault-injection and RLS isolation tests pass.
+- **Files & Functions**:
+  - `alembic/versions/ddd36e757df0_init_schema.py` & `978b10d4cad9_add_anchor_to_turns.py`: Complete database schema with `accounts`, `threads`, `turns`, `gaps`, `turn_chunks`, `outbox`, `deleted_threads`, `events`, and Row-Level Security (`FORCE ROW LEVEL SECURITY`).
+  - `src/thread_save/storage/pg_store.py`: `PgStore` and `PgThreadTxn` implementing `Store` and `ThreadTxn` protocols:
+    - Single transaction per save (`BEGIN` ... `COMMIT`/`ROLLBACK`).
+    - Statement & idle transaction timeouts (`4s` / `5s`).
+    - Parameterized RLS via `SELECT set_config('app.account_id', $1, true)`.
+    - Per-thread advisory transaction lock `pg_advisory_xact_lock(hashtext(thread_id))`.
+    - Single statement fidelity-ranked upsert (`INSERT ... ON CONFLICT DO UPDATE WHERE ...`).
+    - Sticky pagination (`current_page`, `current_page_turns`, `current_page_bytes`).
+    - Tombstones via `deleted_threads` (W-10).
+    - Transactional export enqueue into `outbox` with 2-minute debounce (W-11).
+  - `src/thread_save/storage/renderer.py`: `render_thread_markdown` projecting database rows into canonical Plan v2 Markdown.
+  - `src/thread_save/service.py`: Store-agnostic `TurnService` wired with `enqueue_export()` and `txn.recover_gap()`.
+  - `src/thread_save/storage/writer.py`: Fixed `FileThreadTxn` `REPLACE` regex boundary matching to search closing tag strictly after opening tag.
+  - `tests/test_pg_store.py`: 11 tests verifying happy path, continue x3, duplicate idempotency, interleaved chats, gaps & backfill, tombstone after delete, fault injection rollback, RLS pooled isolation, outbox enqueue, advisory lock concurrency, and differential comparison against `FileStore`.
+- **Test Results**:
+  - `tests/test_pg_store.py`: 11 passed, 0 failed.
+  - `tests/test_protocol.py`: 11 passed, 0 failed.
+  - `run_tests.py`: 21 passed, 0 failed.
+  - Invariant tests (`test_w6_renderer.py`, `test_hmac_and_key_rotation.py`, `test_slug_validation.py`, `test_write_path_invariants.py`): 16 passed, 0 failed.
+  - Total pytest suite: 38 passed in 4.73s.
+  - Hypothesis (`tests/test_hypothesis_v2.py`): 1,000 examples passed cleanly in 37.66s.
+  - `fsck`: Scanned 5 files across 2 threads (21 turns) in `vault_rich_fixture` - 0 errors, fsck clear.
+- **Decisions Taken**:
+  - `set_config('app.account_id', $1, true)` inside transaction blocks used for safe parameter binding in asyncpg without leaking between pooled connections.
+  - Integer fidelity ranking mapped directly between `Fidelity` enum `.rank` property and PostgreSQL `smallint` column.
+  - `total_turns` in stats counts completed user and assistant turns excluding the provisional `Fidelity.OPEN` placeholder.
+

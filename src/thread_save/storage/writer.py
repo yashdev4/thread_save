@@ -147,6 +147,13 @@ class FileThreadTxn:
     async def load_slots(self) -> SlotIndex:
         return self._store._slots
 
+    async def match_anchor(self, prev_user_anchor: str) -> Optional[int]:
+        norm = normalise_anchor(prev_user_anchor)
+        if not norm or not self._entry:
+            return None
+        matches = [m for m, a in self._entry.anchor_map.items() if a == norm]
+        return max(matches) if matches else None
+
     async def upsert_turn(
         self,
         n: int,
@@ -243,19 +250,21 @@ class FileThreadTxn:
                 open_pattern = rf"<!-- turn [^>]*i={n}\b[^>]*role={role}\b[^>]* -->"
                 close_pattern = rf"<!-- /turn [^>]*i={n}\b[^>]* -->"
                 open_match = re.search(open_pattern, pcontent)
-                close_match = re.search(close_pattern, pcontent)
-                if open_match and close_match:
-                    new_block = format_turn(turn, nonce=nonce)
-                    new_pcontent = (
-                        pcontent[:open_match.start()]
-                        + new_block
-                        + pcontent[close_match.end():]
-                    )
-                    self._staged_page_edits[pfile] = new_pcontent
-                    if pfile == self._current_page_file:
-                        self._current_content = new_pcontent
-                    replaced = True
-                    break
+                if open_match:
+                    close_match = re.search(close_pattern, pcontent[open_match.end():])
+                    if close_match:
+                        close_end = open_match.end() + close_match.end()
+                        new_block = format_turn(turn, nonce=nonce)
+                        new_pcontent = (
+                            pcontent[:open_match.start()]
+                            + new_block
+                            + pcontent[close_end:]
+                        )
+                        self._staged_page_edits[pfile] = new_pcontent
+                        if pfile == self._current_page_file:
+                            self._current_content = new_pcontent
+                        replaced = True
+                        break
             if not replaced:
                 self._current_content += turn_text
                 self._staged_page_edits[self._current_page_file] = self._current_content

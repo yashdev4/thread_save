@@ -242,13 +242,16 @@ class TurnService:
             else:
                 # Anchor matching
                 anchor_n = None
-                if prev_user_anchor and hasattr(self._store, "_registry"):
-                    entry = self._store._registry.get(bound_id)
-                    if entry:
-                        norm = normalise_anchor(prev_user_anchor)
-                        matches = [m for m, a in entry.anchor_map.items() if a == norm]
-                        if len(matches) == 1:
-                            anchor_n = matches[0]
+                if prev_user_anchor:
+                    if hasattr(txn, "match_anchor"):
+                        anchor_n = await txn.match_anchor(prev_user_anchor)
+                    elif hasattr(self._store, "_registry"):
+                        entry = self._store._registry.get(bound_id)
+                        if entry:
+                            norm = normalise_anchor(prev_user_anchor)
+                            matches = [m for m, a in entry.anchor_map.items() if a == norm]
+                            if len(matches) == 1:
+                                anchor_n = matches[0]
 
                 if anchor_n is not None:
                     n = anchor_n + 1
@@ -308,6 +311,8 @@ class TurnService:
                     model=model_hint,
                 )
                 await txn.update_thread_meta(open_turn=n)
+
+            await txn.enqueue_export()
 
         # 9. Build response
         result: dict = {
@@ -371,6 +376,8 @@ class TurnService:
                         stored.append(n)
                         if hasattr(self._store, "_gaps"):
                             self._store._gaps.recover(thread_id, n)
+                        if hasattr(txn, "recover_gap"):
+                            await txn.recover_gap(n)
                     else:
                         skipped.append(n)
 
@@ -392,6 +399,10 @@ class TurnService:
                             stored.append(n)
                         if hasattr(self._store, "_gaps"):
                             self._store._gaps.recover(thread_id, n)
+                        if hasattr(txn, "recover_gap"):
+                            await txn.recover_gap(n)
+
+            await txn.enqueue_export()
 
         return {"ok": True, "stored": stored, "skipped": skipped}
 
