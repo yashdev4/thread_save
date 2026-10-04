@@ -86,3 +86,67 @@ To protect user conversation archives from accidental deletions or corruption:
 - [x] `/health` probes database connectivity with `SELECT 1`.
 - [x] Server-side request processing p95 latency benchmarked under 100 ms (< 300 ms budget).
 - [ ] **Gate (a) (User Action)**: Live cloud instance provisioned and verified on Fly.io or Render with custom domain and SSL certificate.
+
+---
+
+## 5. Complete Environment Variables & Secrets Reference
+
+Every environment variable and secret required for production deployment:
+
+| Variable | Secret / Config | Default | Required in Prod | Purpose |
+|---|---|---|---|---|
+| `DATABASE_URL` | Secret | `postgresql://postgres:@127.0.0.1:5432/thread_save_test` | **Yes** | Primary PostgreSQL connection string (asyncpg/Alembic). |
+| `THREADVAULT_JWT_SECRET` | Secret | Ephemeral fallback | **Yes** | 32+ bytes secret used to sign and verify OAuth 2.1 JWT access tokens. Must persist across server restarts. |
+| `THREADVAULT_VIEWER_SECRET` | Secret | Built-in test secret | **Yes** | 32+ bytes secret for HMAC-SHA256 signing of viewer tokens (`/v/{token}`) and download tokens (`/download/{thread_id}.md`). |
+| `GOOGLE_CLIENT_ID` | Config | `""` | **Yes** | Google OAuth 2.0 Web Application Client ID for human sign-in. |
+| `GOOGLE_CLIENT_SECRET` | Secret | `""` | **Yes** | Google OAuth 2.0 Web Application Client Secret for token exchange. |
+| `THREADVAULT_ENFORCE_AUTH` | Config | `false` | **Yes** | When `true`, enforces OAuth 2.1 Bearer authentication on all MCP and REST endpoints. |
+| `THREADVAULT_ENVELOPE_KEY` | Secret | `""` | Optional | 32-byte hex-encoded Master Key for AES-256-GCM envelope encryption at rest. |
+| `THREADVAULT_SERVER_KEY` | Secret | `""` | Optional | Secret key for generating HMAC integrity tags in redaction masks (`[REDACTED:aws_access_key:xxxx]`). |
+| `THREADVAULT_VIEWER_TTL_SECONDS` | Config | `900` (15 min) | No | Time-to-live in seconds for viewer URLs and download links. |
+| `THREADVAULT_MODE` | Config | `turn_start` | No | Reliability protocol mode: `turn_start` (default) or `both`. |
+| `THREADVAULT_NUDGE` | Config | `off` | No | Prompt nudge mode: `off` (default) or `on`. |
+| `PORT` | Config | `8000` | No | HTTP port for Uvicorn web server. |
+
+---
+
+## 6. Google OAuth 2.0 Upstream IdP Configuration
+
+ThreadVault uses Google as its primary upstream Identity Provider (IdP) so human sign-in produces a stable `account_id` keyed strictly on Google's `sub` claim (never email).
+
+### Step-by-Step Google Cloud Console Setup
+
+1. **Create Google Cloud Project**:
+   - Go to [Google Cloud Console](https://console.cloud.google.com/).
+   - Create a new project named `ThreadVault`.
+
+2. **Configure OAuth Consent Screen**:
+   - Navigate to **APIs & Services** > **OAuth consent screen**.
+   - User Type: Select **External** (or **Internal** for Google Workspace orgs).
+   - App Name: `ThreadVault`.
+   - User support email: Select your admin email.
+   - Authorized domains: Add your deployed domain (e.g. `fly.dev` or `yourdomain.com`).
+   - Scopes: Request only minimal identity scopes:
+     - `openid` (view your general account info)
+     - `https://www.googleapis.com/auth/userinfo.email` (`email`)
+     - Do NOT request `profile` or extended Google Drive/Gmail scopes.
+
+3. **Add Test Users (while in Testing status)**:
+   - Under **Test users**, click **Add Users**.
+   - Add your personal Google account email(s).
+
+4. **Create OAuth 2.0 Credentials**:
+   - Navigate to **APIs & Services** > **Credentials**.
+   - Click **Create Credentials** > **OAuth client ID**.
+   - Application type: **Web application**.
+   - Name: `ThreadVault Web Client`.
+   - **Authorized redirect URIs**:
+     - Exact production URI: `https://<your-domain>/oauth/callback/google`
+     - Local dev URI: `http://localhost:8000/oauth/callback/google`
+   - Click **Create**. Copy the **Client ID** and **Client Secret**.
+
+5. **Set Production Secrets**:
+   ```bash
+   fly secrets set GOOGLE_CLIENT_ID="<client-id>.apps.googleusercontent.com"
+   fly secrets set GOOGLE_CLIENT_SECRET="<client-secret>"
+   ```

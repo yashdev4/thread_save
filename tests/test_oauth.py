@@ -573,3 +573,53 @@ async def test_oauth_revoke_and_reconnect_stable_account_id(pg_store):
 
             # CRITICAL ASSERTION: Reconnecting yields the exact same account_id!
             assert account_id_1 == account_id_2
+
+
+@pytest.mark.asyncio
+async def test_google_oauth_scopes_and_sub_claim(oauth_setup, monkeypatch):
+    """F3: Verify Google OAuth scopes request only openid email and accounts key strictly on sub."""
+    app, oa_server = oauth_setup
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "mock-google-client-id.apps.googleusercontent.com")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "mock-secret")
+
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
+            reg_resp = await client.post(
+                "/oauth/register",
+                json={
+                    "client_name": "Google Test Client",
+                    "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
+                },
+            )
+            client_id = reg_resp.json()["client_id"]
+            verifier, challenge = generate_pkce_pair()
+
+            # HTML consent page requests Google sign-in
+            auth_url = (
+                f"/oauth/authorize?client_id={client_id}&redirect_uri=https://claude.ai/api/mcp/auth_callback"
+                f"&response_type=code&code_challenge={challenge}&code_challenge_method=S256"
+            )
+            html_resp = await client.get(auth_url, headers={"Accept": "text/html"})
+            assert html_resp.status_code == 200
+            assert "scope=openid%20email" in html_resp.text
+            assert "profile" not in html_resp.text
+
+            # Confirm accounts are keyed on Google sub claim, not email
+            acc_id_1, _ = await oa_server.resolve_upstream_account(
+                oauth_sub="google:112233445566",
+                email="user@example.com",
+            )
+            # Same sub, different email (e.g. user changed Google email)
+            acc_id_2, _ = await oa_server.resolve_upstream_account(
+                oauth_sub="google:112233445566",
+                email="new_email@example.com",
+            )
+            assert acc_id_1 == acc_id_2
+
+            # Different sub, same email (e.g. different Google account)
+            acc_id_3, _ = await oa_server.resolve_upstream_account(
+                oauth_sub="google:998877665544",
+                email="user@example.com",
+            )
+            assert acc_id_1 != acc_id_3

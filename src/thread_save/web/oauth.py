@@ -642,7 +642,7 @@ def create_oauth_router(oauth_server: OAuthServer) -> APIRouter:
                         "state": state,
                     })
                 )
-                g_auth_url = f"{GOOGLE_AUTH_URL}?client_id={google_client_id}&redirect_uri={cb_url}&response_type=code&scope=openid%20email%20profile&state={flow_state}"
+                g_auth_url = f"{GOOGLE_AUTH_URL}?client_id={google_client_id}&redirect_uri={cb_url}&response_type=code&scope=openid%20email&state={flow_state}"
                 google_button_html = f"""<a href="{g_auth_url}" class="google-btn">Sign in with Google</a>"""
 
             html_content = f"""<!DOCTYPE html>

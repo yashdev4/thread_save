@@ -6,6 +6,7 @@
 - **Gate (c) Real Drive / GitHub Credentials (Milestone X7)**: Providing actual Google Drive service account / OAuth tokens or GitHub Personal Access Tokens. Outbox exporter implemented, tested against fake/mock target and filesystem exporter, with error retry and crash safety verified.
 - **Gate (d) Live Local Vault Import (Milestone X10)**: Running `import_local_vault` against user's private live production vault. CLI implemented with `--dry-run` default and tested against local test vaults.
 - **Gate (e) Live Cross-Surface Tests (Milestone X9)**: Executing live Claude mobile/desktop interactions across physical devices. Automated regression test harness provided in `scripts/cross_surface_test.py`; manual live QA checklist provided in `docs/CROSS_SURFACE_TESTING.md`.
+- **Gate (f) Google OAuth App Setup**: Creating the Google Cloud Console Web Application OAuth client with exact redirect URI `https://<domain>/oauth/callback/google`, setting consent screen to minimal scopes (`openid`, `email`), and adding user to Test Users list (documented in `docs/DEPLOYMENT.md` §6).
 
 ---
 
@@ -539,6 +540,67 @@
 - **Decisions Taken**:
   - Distinguishing automated simulation from physical device verification ensures test coverage is honest and transparent: simulation proves protocol compliance, while manual QA (Gate e) remains an explicit checklist for physical devices.
   - Aligning all verification steps in `CROSS_SURFACE_TESTING.md` with remotely exposed HTTP features ensures that external operators can fully validate a deployment without requiring direct database credentials or internal filesystem access.
+
+---
+
+## Follow-up F1: Fast Postgres FSCK in Hypothesis & Concurrency
+- **Status**: Completed
+- **Done When Criteria**:
+  - Run the fsck checks inside the PgStore Hypothesis test after every example and at the end of the concurrency test, failing the test on any violation.
+  - Report the largest state scanned (accounts/threads/turns).
+- **Files & Functions**:
+  - `src/thread_save/fsck.py`: Added `check_pg_fsck_conn(conn: asyncpg.Connection) -> tuple[list[str], dict[str, int]]` validating W-1..W-10 invariants directly over active pooled connections without TCP handshake overhead. Fixed W-7 check for open assistant turns (`body=""` with SHA-256 hash) and W-9 delimiter check to strictly flag tags matching the thread's active secret nonce.
+  - `tests/test_pg_store.py`: Added active connection fsck call to `test_pg_advisory_lock_concurrency`.
+  - `tests/test_hypothesis_v2.py`: Wired `check_pg_fsck_conn` inside `_run_hypothesis_iteration("pg", ops)` after every example. Added `LARGEST_PG_STATE` tracker and reporting test.
+- **Test Results**:
+  - `tests/test_pg_store.py`: 11 passed, 0 failed (concurrency test fsck clean).
+  - `tests/test_hypothesis_v2.py`: 1,000 Hypothesis examples on PgStore passed cleanly with zero fsck violations across every single example.
+  - **Largest State Scanned**:
+    - **Accounts**: 1,074
+    - **Threads**: 1,075
+    - **Turns**: 13,948
+    - **Gaps**: 3,654
+    - **Outbox Jobs**: 1,075
+  - `python -m thread_save.fsck --dsn <test_dsn>`: Scanned 1,074 accounts, 1,075 threads, 13,948 turns — Postgres fsck clear.
+- **Decisions Taken**:
+  - Running fsck directly on the leased asyncpg connection inside the active event loop avoids reconnect overhead while verifying the exact database snapshot before transaction close.
+  - W-9 delimiter check in Postgres correctly checks for the presence of the thread's assigned random nonce (`f"nonce={t_nonce}"`) rather than arbitrary turn delimiter strings, because user input may legitimately mention delimiters in programming queries.
+
+---
+
+## Follow-up F2: Multi-Use Download Tokens within TTL
+- **Status**: Completed
+- **Done When Criteria**:
+  - Download tokens (`/download/{thread_id}.md?token={token}`) permit multiple downloads within the 15-minute expiry window while strictly maintaining thread and account binding.
+  - Explain design choice between multi-use vs 5-use DB counter.
+- **Files & Functions**:
+  - `src/thread_save/web/viewer.py`: Removed `_consumed_download_tokens` in-memory set and single-use rejection on `/download/{thread_id}.md`. Kept 15-minute expiry (`THREADVAULT_VIEWER_TTL_SECONDS = 900`) and HMAC-SHA256 signature binding to `(thread_id, account_id)`.
+  - `tests/test_viewer.py`: Updated `test_h5_viewer_link_expiry_and_reuse_prevention` to verify that multiple downloads within the 15m TTL window succeed without 403 rejection.
+- **Test Results**:
+  - `tests/test_viewer.py`: 5 passed, 0 failed.
+- **Decisions Taken**:
+  - Chose multi-use within 15-minute TTL rather than a 5-use database counter. Industry-standard pre-signed URLs (e.g. AWS S3 presigned URLs, Google Cloud Storage signed URLs) rely on time-bound HMAC signatures without burning tokens on first read. This keeps file downloads completely stateless, prevents database row-lock contention and write overhead during large streaming downloads, and supports download managers, browser retries, and HTTP range requests cleanly without premature token invalidation.
+
+---
+
+## Follow-up F3: Google OAuth Identity, Minimal Scopes & Deployment Docs
+- **Status**: Completed
+- **Done When Criteria**:
+  - Confirm accounts are keyed on Google `sub` claim, not email.
+  - Request only minimal scopes (`openid email`).
+  - Add "Needs user" gate for Google OAuth client creation, redirect URI, consent screen, and test users.
+  - Document every environment variable and secret required for production deployment in `docs/DEPLOYMENT.md`.
+- **Files & Functions**:
+  - `src/thread_save/web/oauth.py`: Changed Google authorization URL scope parameter from `openid%20email%20profile` to `openid%20email`.
+  - `tests/test_oauth.py`: Added `test_google_oauth_scopes_and_sub_claim` verifying minimal scopes and account keying on `oauth_sub="google:{sub}"`.
+  - `docs/DEPLOYMENT.md`: Added Section 5 (exhaustive reference table of all environment variables and production secrets) and Section 6 (step-by-step Google Cloud Console setup guide with exact redirect URIs).
+  - `PROGRESS.md`: Added Gate (f) under "Needs User".
+- **Test Results**:
+  - `tests/test_oauth.py`: 8 passed, 0 failed.
+- **Decisions Taken**:
+  - Google accounts are keyed strictly on `oauth_sub = f"google:{sub}"`. An email address can be changed or reassigned by Google/Workspace admins; the `sub` claim is globally unique and immutable, guaranteeing account identity stability.
+  - Scopes are restricted strictly to `openid` and `email` to honor the principle of least privilege and eliminate friction during OAuth consent review.
+
 
 
 
