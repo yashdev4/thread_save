@@ -484,6 +484,37 @@
   - Moving migrations out of container startup into the deployment orchestrator's release step prevents concurrent database migrations when scaling out web worker replicas, while ensuring failed schema migrations fail the release before routing traffic.
   - Explicitly configured non-sleeping plans ensure uninterrupted SSE streaming and prevent 30-50s cold-start delays.
 
+---
+
+## Milestone H8: Migration CLI Safety (Default Dry-Run, Require --apply, & Account Slug Validation)
+- **Status**: Completed
+- **Done When Criteria**:
+  - Local migration CLI defaults to `--dry-run` without modifying the database; requires explicit `--apply` flag to execute writes.
+  - `--account-slug` must match an existing OAuth account in the PostgreSQL `accounts` table; targeting an unauthenticated or non-existent account aborts migration immediately with an informative error message and non-zero exit code.
+  - Automated tests verify default dry-run behavior, `--apply` requirement, existing account validation, and subprocess CLI failure when targeting non-existent accounts.
+- **Files & Functions**:
+  - `src/thread_save/cli/migrate.py`:
+    - Updated `import_local_vault` to default `dry_run=True` (and require `apply=True` to write).
+    - Added database pre-validation ensuring `account_slug` exists in PostgreSQL `accounts` table before processing any page files, aborting with descriptive error if not found.
+    - Updated `main()`: added `--apply` flag, set `--dry-run` as explicit flag, defaults to dry-run unless `--apply` is specified. Prints error messages to stderr upon failure.
+  - `src/thread_save/storage/pg_store.py`:
+    - Updated `resolve_account_uuid` to look up existing account by slug first to avoid unique key collisions (`accounts_slug_key`).
+  - `tests/test_migration_cli.py`:
+    - Added `test_h8_default_dry_run_requires_apply` verifying no database writes occur without `--apply`, and writes occur with `--apply`.
+    - Added `test_h8_account_slug_must_match_existing_oauth_account` verifying rejection of non-existent account slugs in both programmatic and CLI subprocess invocations.
+    - Updated `clean_pg_store` fixture to pre-seed test OAuth accounts.
+  - `tests/test_viewer.py`:
+    - Fixed token tampering character replacement logic in `test_x5_viewer_token_crypto` to guarantee altered token bytes.
+- **Test Results**:
+  - `tests/test_migration_cli.py`: 7 passed, 0 failed.
+  - Full pytest suite: 79 passed in 112.63s (including both Hypothesis 1,000-example profiles).
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns, 0 gaps, 2 outbox jobs in `thread_save_test` database — Postgres fsck clear.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+- **Decisions Taken**:
+  - Requiring `--apply` prevents accidental destructive or unintended imports from scripts or human operator error.
+  - Enforcing that the account slug must already exist in the `accounts` table ensures that migrated local threads are strictly associated with authentic, established OAuth users rather than orphaned or synthetic account partitions.
+
+
 
 
 

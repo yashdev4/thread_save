@@ -51,12 +51,23 @@ async def import_local_vault(
     pg_store: Optional[PgStore] = None,
     dsn: Optional[str] = None,
     account_slug: Optional[str] = None,
-    dry_run: bool = False,
+    dry_run: Optional[bool] = None,
+    apply: bool = False,
     verbose: bool = True,
 ) -> MigrationSummary:
-    """Import local Markdown vault files into PgStore."""
+    """Import local Markdown vault files into PgStore.
+
+    Safety (§Milestone H8):
+    - Defaults to dry-run (requires apply=True or dry_run=False to write).
+    - Validates that target account_slug matches an existing OAuth account in database.
+    """
+    if dry_run is not None:
+        is_dry_run = dry_run and not apply
+    else:
+        is_dry_run = not apply
+
     root = Path(vault_dir)
-    summary = MigrationSummary(dry_run=dry_run)
+    summary = MigrationSummary(dry_run=is_dry_run)
 
     if not root.exists() or not root.is_dir():
         summary.errors.append(f"Vault directory does not exist: {root}")
@@ -90,19 +101,15 @@ async def import_local_vault(
     if verbose:
         print(f"Scanned {summary.files_scanned} files across {summary.threads_scanned} threads ({summary.turns_scanned} turns).")
 
-    if dry_run:
-        if verbose:
-            print("[DRY RUN] Preview completed. No database changes were made.")
-        unique_slots = set()
-        for tid, page_tuples in thread_groups.items():
-            for _, _, turns in page_tuples:
-                for turn in turns:
-                    unique_slots.add((tid, turn.turn_index, turn.role))
-        summary.threads_imported = summary.threads_scanned
-        summary.turns_imported = len(unique_slots)
-        return summary
+    # Determine target account
+    target_account = account_slug
+    if not target_account and thread_groups:
+        first_group = next(iter(thread_groups.values()))
+        if first_group:
+            target_account = getattr(first_group[0][1], "account", None)
+    clean_account = sanitize_slug(target_account or "default")
 
-    # Real Migration into PostgreSQL
+    # Connect to PostgreSQL to validate account and perform migration
     owns_store = False
     store = pg_store
     if store is None:
@@ -113,17 +120,42 @@ async def import_local_vault(
 
     try:
         async with store.pool.acquire() as conn:
+            # Milestone H8: --account-slug must match existing OAuth account in database
+            acc_row = await conn.fetchrow(
+                "SELECT id, slug FROM accounts WHERE slug = $1",
+                clean_account,
+            )
+            if acc_row is None:
+                err_msg = (
+                    f"Account slug '{clean_account}' does not match any existing OAuth account in database. "
+                    "An existing OAuth account in the database is required before migrating."
+                )
+                summary.errors.append(err_msg)
+                if verbose:
+                    print(f"[ERROR] {err_msg}", file=sys.stderr)
+                return summary
+
+            acc_uuid = acc_row["id"]
+
+            if is_dry_run:
+                if verbose:
+                    print(f"[DRY RUN] Target account '{clean_account}' verified (UUID: {acc_uuid}).")
+                    print("[DRY RUN] Preview completed. No database changes were made.")
+                unique_slots = set()
+                for tid, page_tuples in thread_groups.items():
+                    for _, _, turns in page_tuples:
+                        for turn in turns:
+                            unique_slots.add((tid, turn.turn_index, turn.role))
+                summary.threads_imported = summary.threads_scanned
+                summary.turns_imported = len(unique_slots)
+                return summary
+
             for thread_id, page_tuples in thread_groups.items():
                 try:
                     # Sort pages in ascending order
                     page_tuples.sort(key=lambda item: item[1].page)
                     first_meta = page_tuples[0][1]
                     last_meta = page_tuples[-1][1]
-
-                    target_account = account_slug or getattr(first_meta, "account", None) or "default"
-                    clean_account = sanitize_slug(target_account)
-
-                    acc_uuid = await store.resolve_account_uuid(conn, clean_account)
 
                     created_ts = first_meta.created
                     if isinstance(created_ts, str):
@@ -301,12 +333,19 @@ def main():
     parser.add_argument(
         "--account-slug",
         default=None,
-        help="Target account slug (defaults to slug in file front matter or 'default')",
+        help="Target account slug. Must match an existing OAuth account in database.",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        default=False,
+        help="Execute database writes (requires --apply; default is dry-run)",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Inspect files and report without modifying the database",
+        default=False,
+        help="Inspect files and report without modifying the database (default: True)",
     )
     parser.add_argument(
         "--quiet",
@@ -316,17 +355,25 @@ def main():
 
     args = parser.parse_args()
 
+    # Safety: default to --dry-run, require --apply to write (§Milestone H8)
+    is_dry_run = True
+    if args.apply and not args.dry_run:
+        is_dry_run = False
+
     summary = asyncio.run(
         import_local_vault(
             vault_dir=args.vault_dir,
             dsn=args.dsn,
             account_slug=args.account_slug,
-            dry_run=args.dry_run,
+            dry_run=is_dry_run,
+            apply=not is_dry_run,
             verbose=not args.quiet,
         )
     )
 
     if not summary.success:
+        for err in summary.errors:
+            print(f"[ERROR] {err}", file=sys.stderr)
         sys.exit(1)
 
 

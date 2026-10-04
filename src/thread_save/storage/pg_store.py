@@ -444,6 +444,12 @@ class PgStore:
         except (ValueError, TypeError):
             acc_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, f"threadvault.account.{account_id}")
 
+        slug = sanitize_slug(account_id, 20)
+        existing = await conn.fetchval("SELECT id FROM accounts WHERE slug = $1", slug)
+        if existing is not None:
+            self._account_cache[account_id] = existing
+            return existing
+
         await conn.execute(
             """
             INSERT INTO accounts (id, oauth_sub, slug, created_at)
@@ -452,7 +458,7 @@ class PgStore:
             """,
             acc_uuid,
             f"sub_{account_id}",
-            sanitize_slug(account_id, 20),
+            slug,
         )
         self._account_cache[account_id] = acc_uuid
         return acc_uuid

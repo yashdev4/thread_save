@@ -151,7 +151,7 @@ async def test_x5_viewer_token_crypto():
     assert acc == "alice"
 
     # Tampered token
-    tampered = token[:-2] + ("A" if token[-1] != "A" else "B") + token[-1]
+    tampered = token[:-1] + ("B" if token[-1] == "A" else "A")
     with pytest.raises(ValueError, match="signature|Base64"):
         verify_viewer_token(tampered, secret=secret)
 

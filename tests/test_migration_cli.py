@@ -34,6 +34,13 @@ async def clean_pg_store():
         await conn.execute(
             "TRUNCATE turns, gaps, turn_chunks, outbox, deleted_threads, events, threads, accounts CASCADE"
         )
+        # Pre-seed OAuth accounts for tests (§Milestone H8: account must exist)
+        await conn.execute(
+            "INSERT INTO accounts (id, oauth_sub, slug, created_at) VALUES (gen_random_uuid(), 'sub_imported', 'imported-user', now())"
+        )
+        await conn.execute(
+            "INSERT INTO accounts (id, oauth_sub, slug, created_at) VALUES (gen_random_uuid(), 'sub_test', 'test-account', now())"
+        )
     yield store
     await store.close()
 
@@ -184,3 +191,70 @@ def test_migration_cli_subprocess():
         text=True,
     )
     assert result.returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_h8_default_dry_run_requires_apply(clean_pg_store):
+    """Milestone H8: default to dry-run without apply=True; require apply=True to write."""
+    # When apply is not passed, it defaults to dry-run (no DB writes)
+    summary_default = await import_local_vault(
+        vault_dir=FIXTURE_VAULT,
+        pg_store=clean_pg_store,
+        account_slug="imported-user",
+        verbose=False,
+    )
+    assert summary_default.dry_run is True
+    assert summary_default.success is True
+
+    async with clean_pg_store.pool.acquire() as conn:
+        t_count = await conn.fetchval("SELECT count(*) FROM threads")
+        assert t_count == 0
+
+    # With apply=True, it writes to the database
+    summary_apply = await import_local_vault(
+        vault_dir=FIXTURE_VAULT,
+        pg_store=clean_pg_store,
+        account_slug="imported-user",
+        apply=True,
+        verbose=False,
+    )
+    assert summary_apply.dry_run is False
+    assert summary_apply.success is True
+
+    async with clean_pg_store.pool.acquire() as conn:
+        t_count_after = await conn.fetchval("SELECT count(*) FROM threads")
+        assert t_count_after == 2
+
+
+@pytest.mark.asyncio
+async def test_h8_account_slug_must_match_existing_oauth_account(clean_pg_store):
+    """Milestone H8: --account-slug must match existing OAuth account in database or exit with error."""
+    # Attempt migration targeting a non-existent account
+    summary = await import_local_vault(
+        vault_dir=FIXTURE_VAULT,
+        pg_store=clean_pg_store,
+        account_slug="nonexistent-oauth-user",
+        apply=True,
+        verbose=False,
+    )
+    assert summary.success is False
+    assert len(summary.errors) >= 1
+    assert "does not match any existing oauth account" in summary.errors[0].lower()
+
+    # CLI subprocess invocation targeting non-existent account must exit non-zero
+    result_cli = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "thread_save.cli.migrate",
+            "--vault-dir",
+            str(FIXTURE_VAULT),
+            "--account-slug",
+            "completely-nonexistent-user",
+            "--quiet",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result_cli.returncode != 0
+    assert "error" in result_cli.stderr.lower() or "does not match" in result_cli.stderr.lower()
