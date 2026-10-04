@@ -610,6 +610,82 @@ class PgStore:
                 )
         return True
 
+    async def delete_account(self, account_id: str) -> bool:
+        """Cascade delete full account and all associated data (§2 S8, Milestone X6)."""
+        async with self.pool.acquire() as conn:
+            acc_uuid = await self.resolve_account_uuid(conn, account_id)
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT set_config('app.account_id', $1, true)", str(acc_uuid)
+                )
+                res = await conn.execute(
+                    "DELETE FROM accounts WHERE id = $1", acc_uuid
+                )
+                await conn.execute(
+                    "DELETE FROM deleted_threads WHERE account_id = $1", acc_uuid
+                )
+                self._account_cache.pop(account_id, None)
+                return "DELETE 1" in res
+
+    async def set_account_retention(
+        self, account_id: str, retention_days: Optional[int]
+    ) -> None:
+        """Set or update retention period in days for an account (§2 S8)."""
+        async with self.pool.acquire() as conn:
+            acc_uuid = await self.resolve_account_uuid(conn, account_id)
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE accounts SET retention_days = $1 WHERE id = $2",
+                    retention_days,
+                    acc_uuid,
+                )
+
+    async def purge_expired_threads(
+        self, now: Optional[datetime] = None
+    ) -> list[str]:
+        """Purge threads exceeding their account's configured retention policy (§2 S8)."""
+        purged_ids: list[str] = []
+        async with self.pool.acquire() as conn:
+            accounts_with_retention = await conn.fetch(
+                "SELECT id, retention_days FROM accounts WHERE retention_days IS NOT NULL AND retention_days > 0"
+            )
+            for acc in accounts_with_retention:
+                acc_uuid = acc["id"]
+                days = acc["retention_days"]
+                async with conn.transaction():
+                    await conn.execute(
+                        "SELECT set_config('app.account_id', $1, true)", str(acc_uuid)
+                    )
+                    expired_threads = await conn.fetch(
+                        """
+                        SELECT id FROM threads
+                        WHERE account_id = $1
+                          AND updated_at < (COALESCE($2, now()) - make_interval(days := $3))
+                        """,
+                        acc_uuid,
+                        now,
+                        days,
+                    )
+                    for eth in expired_threads:
+                        tid = eth["id"]
+                        await conn.execute(
+                            """
+                            INSERT INTO deleted_threads (thread_id, account_id, deleted_at)
+                            VALUES ($1, $2, now())
+                            ON CONFLICT (thread_id) DO NOTHING;
+                            """,
+                            tid,
+                            acc_uuid,
+                        )
+                        await conn.execute(
+                            "DELETE FROM threads WHERE id = $1 AND account_id = $2",
+                            tid,
+                            acc_uuid,
+                        )
+                        purged_ids.append(tid)
+
+        return purged_ids
+
     def pause_thread(self, thread_id: str, account: str | None = None) -> None:
         self._paused_threads.add(thread_id)
 

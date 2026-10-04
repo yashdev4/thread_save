@@ -145,3 +145,32 @@
 - **Decisions Taken**:
   - Canonical renderer validates thread existence under tenant RLS before rendering turns.
   - Download endpoint accepts both signed HMAC tokens (for external browser links) and active Bearer JWT auth.
+
+### Milestone X6: Security Pass, Redaction, Envelope Encryption, and Tenant Isolation
+- **Status**: Completed
+- **Done When Criteria**:
+  - Pre-insert redaction removes raw secrets before writing into PostgreSQL.
+  - Envelope encryption (AES-256-GCM + HKDF) available for at-rest body protection.
+  - Cross-account test suite verifies zero leaks across all read, write, bind, search, and viewer interfaces.
+  - Thread deletion cascades through turns, gaps, and chunks, recording tombstones without affecting other threads.
+  - Account deletion cascades all tenant data cleanly without affecting other accounts.
+  - Automated retention purge job identifies and removes expired threads per account policy.
+- **Files & Functions**:
+  - `alembic/versions/35a36273444e_add_retention_days_to_accounts.py`: Schema migration adding `retention_days` column to `accounts`.
+  - `src/thread_save/security/encryption.py`:
+    - `derive_account_key`: HKDF-SHA256 key derivation with account-specific info parameter.
+    - `encrypt_body` & `decrypt_body`: Authenticated AES-256-GCM encryption with 96-bit random nonces.
+  - `src/thread_save/storage/pg_store.py`:
+    - `delete_thread`: Cascades deletion of turns/gaps and records tombstone in `deleted_threads` (W-10).
+    - `delete_account`: Cascades deletion of entire account and all associated data.
+    - `set_account_retention`: Configures per-account retention window in days.
+    - `purge_expired_threads`: Scheduled/callable purge job deleting threads past the retention threshold.
+  - `tests/test_tenant_isolation.py`: 5 tests verifying pre-insert redaction, AES-256-GCM envelope encryption, cross-account zero leaks (search, stats, render, bind, tokens), deletion cascade, and retention purge.
+- **Test Results**:
+  - `tests/test_tenant_isolation.py`: 5 passed, 0 failed.
+  - Pytest full suite: 58 passed in 46.20s (including 1,000 Hypothesis examples in `tests/test_hypothesis_v2.py`).
+  - `run_tests.py`: 21 passed, 0 failed.
+  - fsck: Scanned 5 files across 2 threads (21 turns) in `vault_rich_fixture` - 0 errors, fsck clear.
+- **Decisions Taken**:
+  - `purge_expired_threads` records tombstones upon expiration so subsequent delayed calls are safely rejected (W-10).
+  - Retention threshold is evaluated per-account using `accounts.retention_days`.
