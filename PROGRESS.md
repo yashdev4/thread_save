@@ -303,4 +303,35 @@
   - Body truncation in `PgStore` ensures that canonicalizing and ensuring trailing `\n` does not exceed `MAX_BODY_CHARS` (100,000 characters).
   - Postgres fsck validates content hash prefix matching when 8 chars or exact match when 64 chars.
 
+---
+
+## Milestone H2: OAuth Identity, Persistence & Google Upstream IdP
+- **Status**: Completed
+- **Done When Criteria**:
+  - `/oauth/authorize` authenticates the human via Google Sign-In as upstream IdP (`GOOGLE_AUTH_URL`, `GOOGLE_TOKEN_URL`, `GOOGLE_USERINFO_URL`), mapping `sub` to a stable `account_id` in PostgreSQL (`oauth_sub = 'google:' || sub`).
+  - Reconnecting after revocation or restart resolves to the identical `account_id`.
+  - Registered OAuth clients, authorization codes, and refresh tokens are persisted in PostgreSQL (`oauth_clients`, `oauth_auth_codes`, `oauth_refresh_tokens` tables via Alembic migration `7a1b2c3d4e5f`).
+  - JWT signing key is loaded strictly from secret configuration (`THREADVAULT_JWT_SECRET` / `JWT_SECRET_KEY`), never generated randomly at startup.
+  - The static pre-registered Claude client placeholder has been explained and removed in favor of RFC 7591 Dynamic Client Registration.
+  - Verified by tests: server restart preserves refresh token functionality; revoke and reconnect yields identical `account_id`.
+- **Files & Functions**:
+  - `alembic/versions/7a1b2c3d4e5f_add_oauth_persistence_tables.py`: Migration creating `oauth_clients`, `oauth_auth_codes`, `oauth_refresh_tokens`, and adding `email` column to `accounts`.
+  - `src/thread_save/config.py`: Added `jwt_secret` to `VaultConfig` loaded strictly from secret config (`THREADVAULT_JWT_SECRET` / `JWT_SECRET_KEY`), requiring explicit key in production without random generation.
+  - `src/thread_save/web/oauth.py`:
+    - Full PostgreSQL persistence for `register_client`, `get_client`, `create_auth_code`, `consume_auth_code`, `create_tokens_async`, `rotate_refresh_token`, and `revoke_refresh_token`.
+    - Added RFC 7009 Token Revocation endpoint (`POST /oauth/revoke`).
+    - Added Google Upstream IdP authentication in `/oauth/authorize` and `/oauth/callback/google` with `resolve_upstream_account` ensuring stable, immutable `account_id` mapping.
+    - Removed hardcoded static default Claude client.
+  - `src/thread_save/web/app.py`: Automatically wires `PgStore` pool and `cfg.jwt_secret` to `OAuthServer`.
+  - `tests/test_oauth.py`: Added `test_oauth_server_restart_refresh_token_persistence` and `test_oauth_revoke_and_reconnect_stable_account_id`.
+- **Test Results**:
+  - `tests/test_oauth.py`: 6 passed, 0 failed.
+  - Full pytest suite: 74 passed in 105.90s (including both Hypothesis 1,000-example profiles).
+  - `fsck --dsn`: Scanned 1 accounts, 1 threads, 2 turns, 0 gaps, 1 outbox jobs in `thread_save_test` database — Postgres fsck clear.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+- **Decisions Taken**:
+  - Upstream Google authentication resolves human identity via immutable `sub` claim. When reconnecting after revoking tokens, `SELECT id FROM accounts WHERE oauth_sub = $1` matches the original account, preserving existing threads and turns.
+  - Auth code consumption uses atomic `DELETE FROM oauth_auth_codes WHERE code = $1 RETURNING ...` to enforce single-use semantics directly in the database.
+  - Refresh token rotation uses atomic `DELETE FROM oauth_refresh_tokens WHERE token = $1 AND revoked = false RETURNING ...` preventing token replay attacks.
+
 

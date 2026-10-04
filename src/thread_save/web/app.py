@@ -34,11 +34,18 @@ def create_app(
     oauth_server: Optional[OAuthServer] = None,
     enforce_auth: bool = False,
 ) -> FastAPI:
-    """Create and configure FastAPI application with Streamable HTTP MCP server and OAuth 2.1."""
     cfg = config or load_config()
     store = pg_store or PgStore()
     svc = service or TurnService(store, config=cfg)
-    oa_server = oauth_server or OAuthServer()
+    if oauth_server:
+        oa_server = oauth_server
+        if oa_server._pg_store is None and isinstance(store, PgStore):
+            oa_server._pg_store = store
+    else:
+        oa_server = OAuthServer(
+            jwt_secret=cfg.jwt_secret,
+            pg_store=store if isinstance(store, PgStore) else None,
+        )
 
     mcp_server = create_http_mcp_server(svc)
     mcp_asgi = mcp_server.streamable_http_app()

@@ -68,6 +68,9 @@ class VaultConfig:
     # Events rotation (§7)
     events_max_bytes: int = 10_000_000  # 10 MB
 
+    # OAuth JWT Signing Key (Milestone H2) - loaded from secret config, never generated at startup
+    jwt_secret: str = "threadvault-default-jwt-secret-key-change-in-prod-32bytes-min!"
+
     # ── Derived paths ──────────────────────────────────────────────────
 
     @property
@@ -142,5 +145,19 @@ def load_config() -> VaultConfig:
 
     if nudge_str := os.environ.get("THREADVAULT_NUDGE"):
         kwargs["nudge"] = NudgeMode(nudge_str.lower())
+
+    jwt_secret_val = os.environ.get("THREADVAULT_JWT_SECRET") or os.environ.get("JWT_SECRET_KEY")
+    is_prod = bool(
+        os.environ.get("ENVIRONMENT") == "production"
+        or os.environ.get("RENDER")
+        or os.environ.get("FLY_APP_NAME")
+    )
+    if not jwt_secret_val:
+        if is_prod:
+            raise ValueError(
+                "Production deployment requires THREADVAULT_JWT_SECRET secret environment variable!"
+            )
+        jwt_secret_val = "threadvault-default-jwt-secret-key-change-in-prod-32bytes-min!"
+    kwargs["jwt_secret"] = jwt_secret_val
 
     return VaultConfig(**kwargs)

@@ -44,7 +44,7 @@ async def pg_store():
     await store.connect()
     async with store.pool.acquire() as conn:
         await conn.execute(
-            "TRUNCATE turns, gaps, turn_chunks, outbox, deleted_threads, events, threads, accounts CASCADE"
+            "TRUNCATE turns, gaps, turn_chunks, outbox, deleted_threads, events, threads, accounts, oauth_clients, oauth_auth_codes, oauth_refresh_tokens CASCADE"
         )
     yield store
     await store.close()
@@ -54,7 +54,7 @@ async def pg_store():
 def oauth_setup(pg_store):
     cfg = VaultConfig(vault_root=Path("./test_vault"), default_account="oauth-default")
     svc = TurnService(pg_store, config=cfg)
-    oa_server = OAuthServer(jwt_secret="test-oauth-secret-key-32bytes-minimum!!")
+    oa_server = OAuthServer(jwt_secret="test-oauth-secret-key-32bytes-minimum!!", pg_store=pg_store)
     app = create_app(
         pg_store=pg_store,
         service=svc,
@@ -376,3 +376,200 @@ async def test_oauth_authenticated_mcp_and_rls_isolation(oauth_setup, pg_store):
             alice_res2 = json.loads(alice_data2["result"]["content"][0]["text"])
             assert len(alice_res2["threads"]) == 1
             assert alice_res2["threads"][0]["thread_id"] == alice_thread_id
+
+
+@pytest.mark.asyncio
+async def test_oauth_server_restart_refresh_token_persistence(pg_store):
+    """Verify that after a complete server restart (blank memory state), existing refresh tokens in Postgres still work."""
+    cfg = VaultConfig(vault_root=Path("./test_vault"), default_account="oauth-default")
+    svc = TurnService(pg_store, config=cfg)
+    jwt_secret = "restart-test-secret-key-32bytes-minimum!!"
+
+    # Server instance 1
+    oa_server_1 = OAuthServer(jwt_secret=jwt_secret, pg_store=pg_store)
+    app_1 = create_app(pg_store=pg_store, service=svc, config=cfg, oauth_server=oa_server_1, enforce_auth=True)
+
+    client_id = ""
+    refresh_token = ""
+    verifier, challenge = generate_pkce_pair()
+
+    async with app_1.router.lifespan_context(app_1):
+        transport = httpx.ASGITransport(app=app_1)
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
+            # Register client
+            reg_resp = await client.post(
+                "/oauth/register",
+                json={
+                    "client_name": "Restart Client",
+                    "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
+                },
+            )
+            assert reg_resp.status_code == 201
+            client_id = reg_resp.json()["client_id"]
+
+            # Authorize
+            auth_url = (
+                f"/oauth/authorize?client_id={client_id}&redirect_uri=https://claude.ai/api/mcp/auth_callback"
+                f"&response_type=code&code_challenge={challenge}&code_challenge_method=S256"
+                f"&state=st1&account=restart_user&auto_approve=1"
+            )
+            auth_resp = await client.get(auth_url, follow_redirects=False)
+            assert auth_resp.status_code == 302
+            code = auth_resp.headers["location"].split("code=")[1].split("&")[0]
+
+            # Token exchange
+            token_resp = await client.post(
+                "/oauth/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "client_id": client_id,
+                    "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                    "code_verifier": verifier,
+                },
+            )
+            assert token_resp.status_code == 200
+            refresh_token = token_resp.json()["refresh_token"]
+
+    # --- SIMULATE SERVER RESTART ---
+    # Instance 1 is shut down. Create completely NEW server instance 2 with blank memory state!
+    oa_server_2 = OAuthServer(jwt_secret=jwt_secret, pg_store=pg_store)
+    # Memory dictionaries are completely empty
+    assert len(oa_server_2.clients) == 0
+    assert len(oa_server_2.refresh_tokens) == 0
+
+    app_2 = create_app(pg_store=pg_store, service=svc, config=cfg, oauth_server=oa_server_2, enforce_auth=True)
+    async with app_2.router.lifespan_context(app_2):
+        transport = httpx.ASGITransport(app=app_2)
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
+            # Client registered on server 1 can still refresh token on server 2
+            refresh_resp = await client.post(
+                "/oauth/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": client_id,
+                },
+            )
+            assert refresh_resp.status_code == 200
+            data = refresh_resp.json()
+            assert "access_token" in data
+            assert data["refresh_token"] != refresh_token
+
+            # Verify old refresh token is consumed/rotated and cannot be reused
+            reuse_resp = await client.post(
+                "/oauth/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": client_id,
+                },
+            )
+            assert reuse_resp.status_code == 400
+            assert reuse_resp.json()["error"] == "invalid_grant"
+
+
+@pytest.mark.asyncio
+async def test_oauth_revoke_and_reconnect_stable_account_id(pg_store):
+    """Verify that revoking and reconnecting with the same Google upstream IdP yields the identical account_id."""
+    cfg = VaultConfig(vault_root=Path("./test_vault"), default_account="oauth-default")
+    svc = TurnService(pg_store, config=cfg)
+    jwt_secret = "google-reconnect-secret-key-32bytes-min!!"
+
+    oa_server = OAuthServer(jwt_secret=jwt_secret, pg_store=pg_store)
+    app = create_app(pg_store=pg_store, service=svc, config=cfg, oauth_server=oa_server, enforce_auth=True)
+
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
+            # Register client
+            reg_resp = await client.post(
+                "/oauth/register",
+                json={
+                    "client_name": "Claude Desktop",
+                    "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
+                },
+            )
+            client_id = reg_resp.json()["client_id"]
+
+            google_user_sub = "google_user_id_10928374928"
+
+            # 1. First Connection: Authorize with Google upstream IdP
+            verifier_1, challenge_1 = generate_pkce_pair()
+            auth_url_1 = (
+                f"/oauth/authorize?client_id={client_id}&redirect_uri=https://claude.ai/api/mcp/auth_callback"
+                f"&response_type=code&code_challenge={challenge_1}&code_challenge_method=S256"
+                f"&state=state_1&google_sub={google_user_sub}&auto_approve=1"
+            )
+            auth_resp_1 = await client.get(auth_url_1, follow_redirects=False)
+            assert auth_resp_1.status_code == 302
+            code_1 = auth_resp_1.headers["location"].split("code=")[1].split("&")[0]
+
+            token_resp_1 = await client.post(
+                "/oauth/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code_1,
+                    "client_id": client_id,
+                    "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                    "code_verifier": verifier_1,
+                },
+            )
+            assert token_resp_1.status_code == 200
+            token_data_1 = token_resp_1.json()
+            access_token_1 = token_data_1["access_token"]
+            refresh_token_1 = token_data_1["refresh_token"]
+
+            payload_1 = oa_server.verify_access_token(access_token_1)
+            account_id_1 = payload_1["account_id"]
+            assert account_id_1 is not None
+
+            # 2. Revoke the token
+            revoke_resp = await client.post(
+                "/oauth/revoke",
+                data={"token": refresh_token_1},
+            )
+            assert revoke_resp.status_code == 200
+
+            # Verify revoked refresh token is unusable
+            revoked_refresh_resp = await client.post(
+                "/oauth/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token_1,
+                    "client_id": client_id,
+                },
+            )
+            assert revoked_refresh_resp.status_code == 400
+            assert revoked_refresh_resp.json()["error"] == "invalid_grant"
+
+            # 3. Reconnect: Same user signs in again with identical Google upstream IdP
+            verifier_2, challenge_2 = generate_pkce_pair()
+            auth_url_2 = (
+                f"/oauth/authorize?client_id={client_id}&redirect_uri=https://claude.ai/api/mcp/auth_callback"
+                f"&response_type=code&code_challenge={challenge_2}&code_challenge_method=S256"
+                f"&state=state_2&google_sub={google_user_sub}&auto_approve=1"
+            )
+            auth_resp_2 = await client.get(auth_url_2, follow_redirects=False)
+            assert auth_resp_2.status_code == 302
+            code_2 = auth_resp_2.headers["location"].split("code=")[1].split("&")[0]
+
+            token_resp_2 = await client.post(
+                "/oauth/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code_2,
+                    "client_id": client_id,
+                    "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                    "code_verifier": verifier_2,
+                },
+            )
+            assert token_resp_2.status_code == 200
+            token_data_2 = token_resp_2.json()
+            access_token_2 = token_data_2["access_token"]
+
+            payload_2 = oa_server.verify_access_token(access_token_2)
+            account_id_2 = payload_2["account_id"]
+
+            # CRITICAL ASSERTION: Reconnecting yields the exact same account_id!
+            assert account_id_1 == account_id_2
