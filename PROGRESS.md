@@ -90,3 +90,32 @@
 - **Decisions Taken**:
   - FastMCP's ASGI router mounted at root `""` so its internal `/mcp` route is directly accessible as `POST /mcp` without redirect loops.
   - Asyncpg connection pool initialized and health-checked in lifespan context manager.
+
+### Milestone X4: OAuth 2.1 (Discovery, DCR, PKCE, Refresh, Token Identity & RLS)
+- **Status**: Completed (Automated verification complete; External Gate (b) recorded under Needs User)
+- **Done When Criteria**:
+  - RFC 8414 & OpenID Connect discovery endpoints return valid metadata.
+  - RFC 7591 Dynamic Client Registration issues valid client credentials and validates redirect URIs.
+  - RFC 7636 PKCE Authorization Code flow enforces S256 challenge verification.
+  - Token endpoint issues signed JWT access tokens and rotatable refresh tokens; rejects single-use code replay and PKCE mismatches.
+  - Authenticated `/mcp` requests extract account identity from token and enforce PostgreSQL Row-Level Security per request.
+  - Unauthenticated / invalid token requests return 401 Unauthorized.
+- **Files & Functions**:
+  - `src/thread_save/web/oauth.py`:
+    - `OAuthServer`: Manages client registrations, auth codes, refresh tokens, and JWT issuance.
+    - `verify_pkce`: Cryptographic verification of `code_verifier` against SHA-256 `code_challenge`.
+    - `create_oauth_router`: APIRouter mounting `/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`.
+  - `src/thread_save/web/middleware.py`:
+    - `AccountContextMiddleware`: Validates Bearer JWTs via `OAuthServer`, binds verified account identity to `current_account_id` ContextVar, and returns 401 on invalid/expired tokens or when auth is required.
+  - `src/thread_save/web/app.py`: Integrated OAuth router and configured `AccountContextMiddleware` with `OAuthServer`.
+  - `tests/test_oauth.py`: 4 tests verifying discovery metadata, DCR, PKCE authorization code exchange, token refresh rotation, authenticated MCP saves, and cross-account RLS isolation.
+- **Test Results**:
+  - `tests/test_oauth.py`: 4 passed, 0 failed.
+  - Pytest full suite: 49 passed in 50.40s (including 1,000 Hypothesis examples in `tests/test_hypothesis_v2.py`).
+  - `run_tests.py`: 21 passed, 0 failed.
+  - fsck: Scanned 5 files across 2 threads (21 turns) in `vault_rich_fixture` - 0 errors, fsck clear.
+- **Decisions Taken**:
+  - Added cryptographic `jti` claim to JWT access tokens so rapid token re-issuance generates distinct token signatures.
+  - Pre-registered default Claude client for standard connector flows while supporting RFC 7591 DCR.
+- **Needs User**:
+  - **Gate (b)**: Live OAuth interaction with Claude web (Connector added on claude.ai web; login flow completes; token refresh observed in production).

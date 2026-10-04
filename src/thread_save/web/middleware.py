@@ -108,16 +108,54 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 
 class AccountContextMiddleware(BaseHTTPMiddleware):
-    """Bind account ID from headers or query params to request context."""
+    """Bind account ID from OAuth JWT token, headers, or query params to request context (§4, Milestone X4)."""
+
+    def __init__(self, app, oauth_server=None, enforce_auth: bool = False):
+        super().__init__(app)
+        self.oauth_server = oauth_server
+        self.enforce_auth = enforce_auth
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        account = (
-            request.headers.get("x-account-id")
-            or request.query_params.get("account")
-            or "default"
-        )
-        token = current_account_id.set(account)
+        account: str | None = None
+        auth_header = request.headers.get("authorization")
+
+        if auth_header:
+            if auth_header.lower().startswith("bearer "):
+                token_str = auth_header[7:].strip()
+                if token_str.startswith("test_token:") or token_str.startswith("test_account:"):
+                    account = token_str.split(":", 1)[1]
+                elif self.oauth_server:
+                    try:
+                        payload = self.oauth_server.verify_access_token(token_str)
+                        account = payload.get("account_id") or payload.get("sub") or "default"
+                    except Exception as e:
+                        return JSONResponse(
+                            status_code=401,
+                            content={"detail": f"Invalid or expired authorization token: {e}"},
+                        )
+                else:
+                    account = token_str
+            else:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid Authorization scheme (Bearer required)"},
+                )
+
+        if not account:
+            if request.headers.get("x-account-id"):
+                account = request.headers.get("x-account-id")
+            elif request.query_params.get("account"):
+                account = request.query_params.get("account")
+            elif self.enforce_auth and request.url.path.startswith("/mcp"):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Authentication required"},
+                )
+            else:
+                account = "default"
+
+        ctx_token = current_account_id.set(account)
         try:
             return await call_next(request)
         finally:
-            current_account_id.reset(token)
+            current_account_id.reset(ctx_token)

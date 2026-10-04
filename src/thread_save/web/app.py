@@ -20,6 +20,7 @@ from thread_save.web.middleware import (
     RateLimitMiddleware,
     RateLimiter,
 )
+from thread_save.web.oauth import OAuthServer, create_oauth_router
 
 logger = logging.getLogger("thread_save.web.app")
 
@@ -29,11 +30,14 @@ def create_app(
     service: Optional[TurnService] = None,
     config: Optional[VaultConfig] = None,
     rate_limiter: Optional[RateLimiter] = None,
+    oauth_server: Optional[OAuthServer] = None,
+    enforce_auth: bool = False,
 ) -> FastAPI:
-    """Create and configure FastAPI application with Streamable HTTP MCP server."""
+    """Create and configure FastAPI application with Streamable HTTP MCP server and OAuth 2.1."""
     cfg = config or load_config()
     store = pg_store or PgStore()
     svc = service or TurnService(store, config=cfg)
+    oa_server = oauth_server or OAuthServer()
 
     mcp_server = create_http_mcp_server(svc)
     mcp_asgi = mcp_server.streamable_http_app()
@@ -59,10 +63,17 @@ def create_app(
     )
 
     # Security and rate-limiting middlewares (order matters: outer to inner)
-    app.add_middleware(AccountContextMiddleware)
+    app.add_middleware(
+        AccountContextMiddleware,
+        oauth_server=oa_server,
+        enforce_auth=enforce_auth,
+    )
     app.add_middleware(RateLimitMiddleware, limiter=rate_limiter)
     app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(OriginValidatorMiddleware)
+
+    # OAuth 2.1 endpoints (discovery, DCR, PKCE authorization, token issuance & refresh)
+    app.include_router(create_oauth_router(oa_server))
 
     # Health check endpoint (§4.4, Milestone X8 prerequisite)
     @app.get("/health")
