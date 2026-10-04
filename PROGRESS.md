@@ -255,3 +255,29 @@
 - **Needs User**:
   - **Gate (e)**: Live manual cross-surface testing with real Claude Web/Android/iOS/Desktop accounts against a deployed instance.
 
+### Milestone X10: Local Vault Migration CLI & Complete Onboarding
+- **Status**: Completed (Automated migration verification complete; External Gate (d) recorded under Needs User)
+- **Done When Criteria**:
+  - `import_local_vault` CLI translates local Markdown vault files (`*_p*.md`) into PostgreSQL (`PgStore`) rows with `--dry-run` preview.
+  - Preserves multi-page threads, turn ordering, stubs, gaps, and fidelity ranks.
+  - Idempotent re-runs safely update without duplicating rows or corrupting data.
+  - Migrated PostgreSQL rows project cleanly into canonical Plan v2 Markdown via `render_thread_markdown`.
+  - `docs/ONBOARDING.md` updated with explicit instructions to remove the stdio `threadvault` entry from `claude_desktop_config.json` to prevent duplicate tool registrations.
+- **Files & Functions**:
+  - `src/thread_save/cli/__init__.py`: Package init for CLI tools.
+  - `src/thread_save/cli/migrate.py`: `import_local_vault` CLI with dry-run support, schema translation, and PostgreSQL upsert logic.
+  - `pyproject.toml`: Added `thread-save-migrate` command line entry point.
+  - `docs/ONBOARDING.md`: Comprehensive onboarding & migration guide with stdio removal instructions and remote setup.
+  - `tests/test_migration_cli.py`: 5 tests verifying dry run, full import, idempotency, round-trip rendering, and subprocess execution.
+- **Test Results**:
+  - `tests/test_migration_cli.py`: 5 passed, 0 failed.
+  - Pytest full suite: 71 passed in 64.56s (including 1,000 Hypothesis examples in `tests/test_hypothesis_v2.py`).
+  - `run_tests.py`: 21 passed, 0 failed.
+  - fsck: Scanned 5 files across 2 threads (21 turns) in `vault_rich_fixture` - 0 errors, fsck clear.
+- **Decisions Taken**:
+  - Primary key `(thread_id, n, role)` guarantees deduplication of repeated turns across page rolls, preserving the highest fidelity version.
+  - In dry-run mode, unique slot combinations are calculated across all files to accurately report expected import row counts.
+- **Needs User**:
+  - **Gate (d)**: Run `python -m thread_save.cli.migrate --vault-dir <user_vault>` to import live personal history into hosted ThreadVault.
+
+
