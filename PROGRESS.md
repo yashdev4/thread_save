@@ -7,6 +7,8 @@
 - **Gate (d) Live Local Vault Import (Milestone X10)**: Running `import_local_vault` against user's private live production vault. CLI implemented with `--dry-run` default and tested against local test vaults.
 - **Gate (e) Live Cross-Surface Tests (Milestone X9)**: Executing live Claude mobile/desktop interactions across physical devices. Automated regression test harness provided in `scripts/cross_surface_test.py`; manual live QA checklist provided in `docs/CROSS_SURFACE_TESTING.md`.
 - **Gate (f) Google OAuth App Setup**: Creating the Google Cloud Console Web Application OAuth client with exact redirect URI `https://<domain>/oauth/callback/google`, setting consent screen to minimal scopes (`openid`, `email`), and adding user to Test Users list (documented in `docs/DEPLOYMENT.md` §6).
+- **Gate (g) Live GitHub Archive Verification (Milestone GH8)**: User creates a private throwaway repo on GitHub, generates a fine-grained PAT with Contents (read & write), and runs `python scripts/verify_github_live.py` (or sets `THREADVAULT_GH_LIVE_REPO` and `THREADVAULT_GH_LIVE_TOKEN`). Documented in `docs/GITHUB_ARCHIVE_VERIFICATION.md`.
+
 
 ---
 
@@ -795,6 +797,40 @@
   - Continuation thread fallback: Local thread saves should never fail or block because GitHub is temporarily unreachable or offline; if rehydration fails, creating a linked continuation thread (`continues: <orig_id>`) provides high-availability local storage with full provenance.
   - Pointer dedup without rehydration: Claude frequently retries recent turns or sends duplicate requests; checking `recent_turn_keys` directly from the pointer allows zero-I/O duplicate responses without round-tripping to GitHub or rewriting local disk files.
   - Offloaded threads have all page files removed from disk, leaving only the pointer entry in `_index/offloaded.json`. `fsck` strictly verifies that no orphaned or partial page markdown files remain on disk for an offloaded thread.
+
+---
+
+## Milestone GH8: Live Verification (Gate)
+- **Status**: Completed (Infrastructure & Test Suite Delivered; Live Gate ready for user throwaway repo)
+- **Done When Criteria**:
+  - Live test suite `tests/test_github_live.py` implements all 4 live verification phases:
+    1. Private repo verification & guard (`GET /repos/{owner}/{repo}`, rejects public repos).
+    2. First sync batch (Git Data API 3-call sequence creating tree, commit, ref update).
+    3. Incremental batch sync (sticky page hash caching, skipping unchanged Page 1).
+    4. Remote human-edit conflict safety (detects external modifications, avoids overwrite).
+    5. History squash (single parentless orphan commit preserving tree).
+  - Clean conditional execution: tests marked with `@pytest.mark.live` and skip gracefully if `THREADVAULT_GH_LIVE_TOKEN` or `THREADVAULT_GH_LIVE_REPO` are absent.
+  - Interactive test runner script `scripts/verify_github_live.py` provided for manual or automated execution with CLI flags or environment variables.
+  - Full documentation in `docs/GITHUB_ARCHIVE_VERIFICATION.md` detailing GitHub token creation with minimum permissions and step-by-step verification commands.
+- **Files & Functions**:
+  - `tests/test_github_live.py`:
+    - `test_live_verify_private_guard`: verifies target repository is private.
+    - `test_live_first_sync_and_incremental`: tests initial batch push and incremental update with skipped unchanged pages.
+    - `test_live_conflict_handling`: tests detection of remote edits and conflict safety.
+    - `test_live_squash`: tests history squash to orphan root commit.
+  - `scripts/verify_github_live.py`: Automated 5-phase live verification runner with colored reporting and argument parsing.
+  - `docs/GITHUB_ARCHIVE_VERIFICATION.md`: End-user setup guide for throwaway private repo and fine-grained PAT generation.
+  - `pyproject.toml`: Registered `live` pytest marker.
+- **Test Results**:
+  - `tests/test_github_live.py`: 4 skipped in 0.36s (clean skip when external live credentials are unconfigured).
+  - Standalone script validation: exits cleanly with helpful usage instructions when run without arguments.
+  - Full pytest suite: 111 passed, 4 skipped in 255.42s.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns in database — Postgres fsck clear.
+- **Decisions Taken**:
+  - Live testing strictly requires external user credentials to prevent committing personal secrets or mutating unknown repositories. Delivering both a pytest integration suite and a standalone runner ensures users can test in CI or interactively on the command line.
+  - External gate documented under Gate (g) in `PROGRESS.md` with explicit instructions in `docs/GITHUB_ARCHIVE_VERIFICATION.md`.
+
 
 
 

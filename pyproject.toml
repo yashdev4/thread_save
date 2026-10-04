@@ -23,4 +23,8 @@ packages = ["src/thread_save"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "live: live integration tests against external APIs",
+]
+
 
