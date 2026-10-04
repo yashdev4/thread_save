@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.tmp*
+vault/
+vault_*/
+.pytest_cache/
+.hypothesis/
+test_results.txt
+hypothesis_out.txt
+*.log
