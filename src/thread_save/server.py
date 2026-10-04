@@ -278,12 +278,10 @@ async def vault_find(
 
         timer = LatencyTimer()
         with timer:
-            # SQLite FTS first
-            results = index.search_threads(query=query, limit=limit)
-
-            # Fallback to store
-            if not results:
-                raw_hits = await service.find(query=query, limit=limit)
+            is_titles_only = service.envelope_encryption_enabled
+            if is_titles_only:
+                # Envelope encryption mode: bypass SQLite FTS body index and search titles only
+                raw_hits = await service.find(query=query, limit=limit, titles_only=True)
                 results = [
                     {
                         "thread_id": h.thread_id,
@@ -293,11 +291,47 @@ async def vault_find(
                     }
                     for h in raw_hits
                 ]
+            else:
+                # SQLite FTS first
+                results = index.search_threads(query=query, limit=limit)
+
+                # Fallback to store
+                if not results:
+                    raw_hits = await service.find(query=query, limit=limit)
+                    results = [
+                        {
+                            "thread_id": h.thread_id,
+                            "title": h.title,
+                            "snippet": h.snippet,
+                            "updated_at": h.updated_at,
+                        }
+                        for h in raw_hits
+                    ]
 
             # §I-9: Enforce snippet length
             for r in results:
                 if "snippet" in r and len(r["snippet"]) > 200:
                     r["snippet"] = r["snippet"][:197] + "..."
+
+        search_mode = "titles_only" if is_titles_only else "full_text"
+        res: dict[str, Any] = {
+            "ok": True,
+            "threads": results,
+            "count": len(results),
+            "search_mode": search_mode,
+        }
+        if len(results) == 0:
+            if is_titles_only and query:
+                res["notice"] = (
+                    f"Envelope encryption enabled: searched thread titles only (turn bodies are encrypted). "
+                    f"No matching thread titles found for '{query}'."
+                )
+            elif query:
+                res["notice"] = f"No threads matching '{query}' found."
+            else:
+                res["notice"] = "No threads found in vault."
+        elif is_titles_only:
+            res["notice"] = "Envelope encryption enabled: searched thread titles only."
 
         events.log(
             tool="vault_find",
@@ -305,7 +339,7 @@ async def vault_find(
             ok=True,
         )
 
-        return {"ok": True, "threads": results}
+        return res
 
     except Exception as e:
         logger.error("vault_find failed: %s", traceback.format_exc())

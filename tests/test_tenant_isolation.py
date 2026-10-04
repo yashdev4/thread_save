@@ -261,3 +261,92 @@ async def test_x6_retention_policy_and_purge_job(pg_store):
     assert tid_perm not in purged_future
     stats_perm = await pg_store.stats("permanent-user", tid_perm)
     assert stats_perm is not None
+
+
+@pytest.mark.asyncio
+async def test_h6_vault_find_with_envelope_encryption(pg_store):
+    """Milestone H6: vault_find with envelope encryption.
+    
+    Verifies:
+    - search titles only (body-only keywords do not match)
+    - search_mode: "titles_only" is explicitly returned
+    - never silently empty: returns explanatory notice when empty
+    - plaintext search returns search_mode: "full_text"
+    """
+    from thread_save.web.mcp_server import create_http_mcp_server
+    from thread_save.web.context import current_account_id
+
+    # 1. Plaintext setup (envelope_encryption_enabled=False)
+    cfg_plain = VaultConfig(
+        vault_root=Path("./test_vault"),
+        default_account="crypto-user",
+        envelope_encryption_enabled=False,
+    )
+    svc_plain = TurnService(pg_store, config=cfg_plain)
+
+    res_plain = await svc_plain.save_turn(
+        user_query="Quantum computing entanglement secrets in turn body",
+        title_hint="Physics Notes",
+        account="crypto-user",
+    )
+    assert res_plain["ok"]
+    tid = res_plain["thread_id"]
+
+    # In plaintext mode, body keyword matches and search_mode is full_text
+    server_plain = create_http_mcp_server(svc_plain)
+    token = current_account_id.set("crypto-user")
+    try:
+        # Search body keyword
+        find_tool_plain = server_plain._tool_manager._tools["vault_find"].fn
+        res_find_plain = await find_tool_plain(query="entanglement")
+        assert res_find_plain["ok"] is True
+        assert res_find_plain["search_mode"] == "full_text"
+        assert res_find_plain["count"] >= 1
+        assert any(t["thread_id"] == tid for t in res_find_plain["threads"])
+    finally:
+        current_account_id.reset(token)
+
+    # 2. Envelope encryption setup (envelope_encryption_enabled=True)
+    cfg_enc = VaultConfig(
+        vault_root=Path("./test_vault"),
+        default_account="crypto-user",
+        envelope_encryption_enabled=True,
+        master_key="custodial-master-key-32bytes-long!",
+    )
+    svc_enc = TurnService(pg_store, config=cfg_enc)
+    server_enc = create_http_mcp_server(svc_enc)
+
+    token = current_account_id.set("crypto-user")
+    try:
+        find_tool_enc = server_enc._tool_manager._tools["vault_find"].fn
+
+        # A: Search by title keyword ("Physics") -> matches in titles_only mode
+        res_title = await find_tool_enc(query="Physics")
+        assert res_title["ok"] is True
+        assert res_title["search_mode"] == "titles_only"
+        assert res_title["count"] >= 1
+        assert any(t["thread_id"] == tid for t in res_title["threads"])
+
+        # B: Search by body-only keyword ("entanglement") -> 0 hits, never silently empty!
+        res_body = await find_tool_enc(query="entanglement")
+        assert res_body["ok"] is True
+        assert res_body["search_mode"] == "titles_only"
+        assert res_body["count"] == 0
+        assert res_body["threads"] == []
+        # NEVER SILENTLY EMPTY: must have an informative notice explaining encryption & titles only
+        assert "notice" in res_body
+        assert "envelope encryption" in res_body["notice"].lower()
+        assert "titles only" in res_body["notice"].lower()
+
+        # C: Search for completely non-existent term -> 0 hits, never silently empty!
+        res_none = await find_tool_enc(query="nonexistent-xyz")
+        assert res_none["ok"] is True
+        assert res_none["search_mode"] == "titles_only"
+        assert res_none["count"] == 0
+        assert res_none["threads"] == []
+        assert "notice" in res_none
+        assert "envelope encryption" in res_none["notice"].lower()
+
+    finally:
+        current_account_id.reset(token)
+

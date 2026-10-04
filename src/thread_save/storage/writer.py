@@ -525,15 +525,21 @@ class FileStore:
         account_id: str,
         query: str | None,
         limit: int = 10,
+        titles_only: bool = False,
     ) -> list[ThreadHit]:
         results = []
         q_lower = (query or "").lower()
         for tid, entry in self._registry.all_entries().items():
-            if (
-                not q_lower
-                or q_lower in entry.meta.title.lower()
-                or q_lower in entry.meta.slug.lower()
-            ):
+            if not q_lower:
+                match = True
+            elif titles_only:
+                match = q_lower in entry.meta.title.lower()
+            else:
+                match = (
+                    q_lower in entry.meta.title.lower()
+                    or q_lower in entry.meta.slug.lower()
+                )
+            if match:
                 results.append(
                     ThreadHit(
                         thread_id=tid,

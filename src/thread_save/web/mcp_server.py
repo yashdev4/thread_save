@@ -163,7 +163,10 @@ def create_http_mcp_server(service: TurnService) -> MCPServer:
     ) -> dict:
         account = current_account_id.get()
         try:
-            hits = await service.find(query=query, limit=limit, account=account)
+            is_titles_only = service.envelope_encryption_enabled
+            hits = await service.find(
+                query=query, limit=limit, account=account, titles_only=is_titles_only
+            )
             threads = []
             for hit in hits:
                 token = create_viewer_token(hit.thread_id, account)
@@ -175,7 +178,27 @@ def create_http_mcp_server(service: TurnService) -> MCPServer:
                     "viewer_url": f"/v/{token}",
                     "download_url": f"/download/{hit.thread_id}.md?token={token}",
                 })
-            return {"ok": True, "threads": threads, "count": len(threads)}
+
+            search_mode = "titles_only" if is_titles_only else "full_text"
+            result: dict[str, Any] = {
+                "ok": True,
+                "threads": threads,
+                "count": len(threads),
+                "search_mode": search_mode,
+            }
+            if len(threads) == 0:
+                if is_titles_only and query:
+                    result["notice"] = (
+                        f"Envelope encryption enabled: searched thread titles only (turn bodies are encrypted). "
+                        f"No matching thread titles found for '{query}'."
+                    )
+                elif query:
+                    result["notice"] = f"No threads matching '{query}' found."
+                else:
+                    result["notice"] = "No threads found in vault."
+            elif is_titles_only:
+                result["notice"] = "Envelope encryption enabled: searched thread titles only."
+            return result
         except Exception as e:
             logger.error("vault_find error: %s", e)
             return {"ok": False, "code": "server_error", "retryable": True}

@@ -77,6 +77,10 @@ class VaultConfig:
     # Viewer token TTL in seconds (Milestone H5, default 15m)
     viewer_ttl_seconds: int = 900
 
+    # Envelope encryption (§2 S8, Milestone H6)
+    envelope_encryption_enabled: bool = False
+    master_key: Optional[str] = None
+
     # ── Derived paths ──────────────────────────────────────────────────
 
     @property
@@ -185,5 +189,12 @@ def load_config() -> VaultConfig:
 
     if viewer_ttl_str := os.environ.get("THREADVAULT_VIEWER_TTL_SECONDS"):
         kwargs["viewer_ttl_seconds"] = int(viewer_ttl_str)
+
+    if env_enc := os.environ.get("THREADVAULT_ENVELOPE_ENCRYPTION"):
+        kwargs["envelope_encryption_enabled"] = env_enc.lower() in ("true", "1", "yes")
+
+    if master_k := os.environ.get("THREADVAULT_MASTER_KEY"):
+        kwargs["master_key"] = master_k
+        kwargs["envelope_encryption_enabled"] = True
 
     return VaultConfig(**kwargs)

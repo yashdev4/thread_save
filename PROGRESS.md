@@ -431,4 +431,37 @@
   - 15-minute default expiration balances sharing convenience during active conversations with minimizing data exposure windows.
   - Download tokens are single-use: once consumed to stream markdown, the token cannot be reused for subsequent downloads, preventing URL leakage and replay.
 
+---
+
+## Milestone H6: Encryption × Search (Titles-Only Mode & Never Silently Empty)
+- **Status**: Completed
+- **Done When Criteria**:
+  - `vault_find` with envelope encryption defined and tested across PostgreSQL backend, service layer, stdio server, and HTTP MCP endpoint.
+  - Searches thread titles only when envelope encryption is enabled (`search_mode: "titles_only"`).
+  - Never silently empty: when no matching thread titles are found for a query, returns a descriptive `notice` explaining that envelope encryption is active and only thread titles were searched because turn bodies are encrypted.
+  - Plaintext search returns `search_mode: "full_text"`.
+- **Files & Functions**:
+  - `src/thread_save/config.py`: Added `envelope_encryption_enabled: bool` and `master_key: Optional[str]` to `VaultConfig`; loaded via `THREADVAULT_ENVELOPE_ENCRYPTION` and `THREADVAULT_MASTER_KEY` in `load_config()`.
+  - `src/thread_save/storage/protocol.py`: Added `titles_only: bool = False` parameter to `Store.find()`.
+  - `src/thread_save/storage/writer.py`: Updated `FileStore.find()` to accept `titles_only` and filter strictly on thread title.
+  - `src/thread_save/storage/pg_store.py`:
+    - Updated `PgStore.__init__` to accept `master_key` and `envelope_encryption_enabled`.
+    - Updated `PgStore.find()` to support `titles_only`. When active, queries `threads.title ILIKE '%' || $2 || '%'` without invoking `turns.tsv` or inspecting encrypted turn bodies.
+  - `src/thread_save/service.py`:
+    - Added `envelope_encryption_enabled` property on `TurnService`.
+    - Updated `TurnService.find()` to default `titles_only` to `self.envelope_encryption_enabled`.
+  - `src/thread_save/web/mcp_server.py`:
+    - Updated `vault_find` to include `"search_mode": "titles_only"` when envelope encryption is enabled (or `"full_text"` otherwise).
+    - Added non-silently-empty guarantee: returns informative `"notice"` on 0 matches explaining that envelope encryption is active and turn bodies are encrypted.
+  - `src/thread_save/server.py`: Aligned stdio `vault_find` with HTTP `vault_find` to include `search_mode`, `count`, and non-silently-empty `notice`.
+  - `tests/test_tenant_isolation.py`: Added `test_h6_vault_find_with_envelope_encryption` verifying plaintext full-text matching, titles-only search under envelope encryption, rejection of body-only terms, and non-silently-empty notice verification.
+- **Test Results**:
+  - `tests/test_tenant_isolation.py`: 6 passed, 0 failed.
+  - Full pytest suite: 76 passed in 91.00s (including both Hypothesis 1,000-example profiles).
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns, 0 gaps, 2 outbox jobs in `thread_save_test` database — Postgres fsck clear.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+- **Decisions Taken**:
+  - When turn bodies are encrypted with per-account AES-256-GCM keys, PostgreSQL GIN full-text indexing cannot index ciphertext. Falling back to title-only matching avoids misleading empty results, while explicitly declaring `search_mode: "titles_only"` and returning an explanatory `notice` ensures agents and users are fully aware why turn content was omitted from matching.
+
+
 

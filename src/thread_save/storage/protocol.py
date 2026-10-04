@@ -110,6 +110,7 @@ class Store(Protocol):
         account_id: str,
         query: str | None,
         limit: int,
+        titles_only: bool = False,
     ) -> list[ThreadHit]:
         ...
 

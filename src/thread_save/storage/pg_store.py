@@ -405,9 +405,13 @@ class PgStore:
         self,
         dsn: str = "postgresql://postgres:@127.0.0.1:5432/thread_save_test",
         pool: Optional[asyncpg.Pool] = None,
+        master_key: Optional[str] = None,
+        envelope_encryption_enabled: bool = False,
     ):
         self._dsn = dsn
         self._pool: Optional[asyncpg.Pool] = pool
+        self._master_key = master_key
+        self._envelope_encryption_enabled = envelope_encryption_enabled or (master_key is not None)
         self._account_cache: dict[str, uuid.UUID] = {}
         self._paused_threads: set[str] = set()
 
@@ -698,6 +702,7 @@ class PgStore:
         account_id: str,
         query: str | None,
         limit: int = 10,
+        titles_only: Optional[bool] = None,
     ) -> list[ThreadHit]:
         async with self.pool.acquire() as conn:
             acc_uuid = await self.resolve_account_uuid(conn, account_id)
@@ -724,6 +729,38 @@ class PgStore:
                             thread_id=r["id"],
                             title=r["title"] or "Untitled Thread",
                             snippet=r["title"] or "Untitled Thread",
+                            updated_at=r["updated_at"].isoformat(),
+                        )
+                        for r in rows
+                    ]
+
+                is_titles_only = (
+                    titles_only
+                    if titles_only is not None
+                    else self._envelope_encryption_enabled
+                )
+
+                if is_titles_only:
+                    # Envelope encryption search (§H6): turn bodies are encrypted, search thread titles only
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, title, updated_at,
+                               title as snippet
+                        FROM threads
+                        WHERE account_id = $1
+                          AND title ILIKE '%' || $2 || '%'
+                        ORDER BY updated_at DESC
+                        LIMIT $3
+                        """,
+                        acc_uuid,
+                        q,
+                        limit,
+                    )
+                    return [
+                        ThreadHit(
+                            thread_id=r["id"],
+                            title=r["title"] or "Untitled Thread",
+                            snippet=(r["snippet"] or r["title"] or "")[:200],
                             updated_at=r["updated_at"].isoformat(),
                         )
                         for r in rows

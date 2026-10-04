@@ -408,14 +408,30 @@ class TurnService:
 
         return {"ok": True, "stored": stored, "skipped": skipped}
 
+    @property
+    def envelope_encryption_enabled(self) -> bool:
+        if self._config.envelope_encryption_enabled or self._config.master_key:
+            return True
+        if getattr(self._store, "_envelope_encryption_enabled", False):
+            return True
+        return False
+
     async def find(
         self,
         query: str | None = None,
         limit: int = 10,
         account: str | None = None,
+        titles_only: Optional[bool] = None,
     ) -> list[ThreadHit]:
         account = account or self._config.default_account
-        return await self._store.find(account, query, limit)
+        if titles_only is None:
+            titles_only = self.envelope_encryption_enabled
+        if hasattr(self._store, "find"):
+            try:
+                return await self._store.find(account, query, limit, titles_only=titles_only)
+            except TypeError:
+                return await self._store.find(account, query, limit)
+        return []
 
     def stats(
         self,
