@@ -696,9 +696,30 @@
   - Full pytest suite: 94 passed, 0 failed in 19.93s.
   - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
   - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns in database — Postgres fsck clear.
+
+---
+
+## Milestone GH5: Deletion In Batches & History Squash CLI
+- **Status**: Completed
+- **Done When Criteria**:
+  - File removal in batch: thread deletion creates entries with `sha=None` in Git Data API tree, deleting page files on GitHub.
+  - History squash: `python -m thread_save.cli.github squash` rewrites the archive branch to a single orphan (parent-less) commit of the current tree using force update.
+  - Transparent documentation and CLI warnings regarding git history semantics: deleting threads leaves old versions in git history until an explicit or scheduled squash is performed.
+  - Tests verify: squash produces single-parent-less commit with current tree only; batch deletion removes files from tree; CLI command runner executes cleanly.
+- **Files & Functions**:
+  - `src/thread_save/export/github.py`: Added `squash_history()` on `GitHubDataApiTarget` creating root commit with `parents=[]` and force-updating ref.
+  - `src/thread_save/export/sync.py`: Added `delete_thread_files()` on `GitHubBatchExporter` removing files in atomic batch and clearing manifest entries.
+  - `src/thread_save/cli/github.py`: CLI tool implementing `squash` subcommand with clear history semantics notice.
+  - `tests/test_github_squash.py`: Mock test suite verifying orphan root commit creation, parent-less property, tree preservation, and batch file deletion.
+- **Test Results**:
+  - `tests/test_github_squash.py`: 4 passed, 0 failed in 0.38s.
+  - Full pytest suite: 98 passed, 0 failed in 19.71s.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns in database — Postgres fsck clear.
 - **Decisions Taken**:
-  - Detecting remote edits via git blob SHAs ensures ThreadVault honors human edits made via the GitHub web UI, treating the human user as the authoritative writer.
-  - Dead-lettering push-protection rejected commits protects the service from getting blocked by GitHub abuse filters from repeatedly attempting to push detected secrets.
+  - Squashing to a single orphan root commit (`parents: []`) with `force: true` is the only force-push operation permitted in ThreadVault, allowing users to purge old deleted conversations from git history when desired.
+  - Deletions are sent inline in the standard 3-request batch without needing separate blob operations.
+
 
 
 

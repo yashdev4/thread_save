@@ -389,3 +389,72 @@ class GitHubDataApiTarget:
                 )
 
             raise MovedRefMaxRestartsError("Max restarts exceeded")
+
+    async def squash_history(
+        self,
+        message: str = "vault: squashed archive history",
+        verify_private: bool = True,
+    ) -> str:
+        """Rewrite branch to a single orphan commit containing the current tree only (G6).
+
+        This creates a root commit with zero parents, permanently making earlier commits unreferenced.
+        """
+        async with self._get_client() as client:
+            if verify_private:
+                await self.verify_private_repo(client)
+
+            # 1. Read current head commit sha
+            ref_resp = await self._request("GET", f"/repos/{self.repo}/git/ref/heads/{self.branch}", client)
+            if ref_resp.status_code == 404:
+                ref_resp = await self._request("GET", f"/repos/{self.repo}/git/refs/heads/{self.branch}", client)
+            if ref_resp.status_code != 200:
+                raise GitHubExportError(
+                    f"Failed to read head ref for branch {self.branch}: {ref_resp.status_code} {ref_resp.text}"
+                )
+            head_sha = ref_resp.json()["object"]["sha"]
+
+            # 2. Read base tree sha of head commit
+            commit_resp = await self._request("GET", f"/repos/{self.repo}/git/commits/{head_sha}", client)
+            if commit_resp.status_code != 200:
+                raise GitHubExportError(
+                    f"Failed to read commit {head_sha}: {commit_resp.status_code} {commit_resp.text}"
+                )
+            current_tree_sha = commit_resp.json()["tree"]["sha"]
+
+            # 3. Create orphan commit with parents: []
+            squash_commit_payload = {
+                "message": message,
+                "tree": current_tree_sha,
+                "parents": [],  # Root / orphan commit with zero parents
+            }
+            create_resp = await self._request(
+                "POST", f"/repos/{self.repo}/git/commits", client, json_data=squash_commit_payload
+            )
+            if create_resp.status_code not in (200, 201):
+                raise GitHubExportError(
+                    f"Failed to create squashed commit: {create_resp.status_code} {create_resp.text}"
+                )
+            squashed_commit_sha = create_resp.json()["sha"]
+
+            # 4. Force update ref to squashed commit (force: true)
+            ref_payload = {
+                "sha": squashed_commit_sha,
+                "force": True,
+            }
+            patch_resp = await self._request(
+                "PATCH", f"/repos/{self.repo}/git/refs/heads/{self.branch}", client, json_data=ref_payload
+            )
+            if patch_resp.status_code != 200:
+                raise GitHubExportError(
+                    f"Failed to force update ref during squash: {patch_resp.status_code} {patch_resp.text}"
+                )
+
+            logger.info(
+                "Successfully squashed history for %s/%s to orphan commit %s (tree %s)",
+                self.repo,
+                self.branch,
+                squashed_commit_sha,
+                current_tree_sha,
+            )
+            return squashed_commit_sha
+

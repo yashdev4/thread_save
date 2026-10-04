@@ -223,3 +223,32 @@ class GitHubBatchExporter:
                 self.blob_shas.update(result.blob_shas)
                 return result
 
+    async def delete_thread_files(
+        self,
+        page_paths: list[str],
+        commit_message: Optional[str] = None,
+    ) -> Optional[GitHubBatchResult]:
+        """Delete thread page files from the archive in a batch commit (G6)."""
+        if not page_paths:
+            return None
+
+        deletion_entries = [
+            GitHubFileEntry(path=path, content=None)
+            for path in page_paths
+        ]
+        for p in page_paths:
+            self.manifest.pop(p, None)
+            self.blob_shas.pop(p, None)
+            self.conflicts.pop(p, None)
+
+        msg = commit_message or f"vault: deleted {len(page_paths)} page(s)"
+        lock = self._get_repo_lock(self.config.repo)
+        async with lock:
+            result = await self.target.push_batch(
+                files=deletion_entries,
+                commit_message=msg,
+                verify_private=True,
+            )
+            return result
+
+
