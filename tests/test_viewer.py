@@ -280,3 +280,57 @@ async def test_x5_vault_find_includes_viewer_urls(pg_store):
             view_resp = await client.get(first_hit["viewer_url"])
             assert view_resp.status_code == 200
             assert "Zebra Thread" in view_resp.text
+
+
+@pytest.mark.asyncio
+async def test_h5_viewer_link_expiry_and_reuse_prevention(pg_store):
+    """Milestone H5: Verify 15m default expiry and prevention of token reuse across threads and downloads."""
+    import base64
+    cfg = VaultConfig(vault_root=Path("./test_vault"), default_account="h5-account")
+    svc = TurnService(pg_store, config=cfg)
+    app = create_app(pg_store=pg_store, service=svc, config=cfg)
+
+    # Create thread 1
+    t1 = await svc.save_turn(user_query="Thread 1 query", title_hint="Thread One", account="h5-account")
+    tid_1 = t1["thread_id"]
+
+    # Create thread 2
+    t2 = await svc.save_turn(user_query="Thread 2 query", title_hint="Thread Two", account="h5-account")
+    tid_2 = t2["thread_id"]
+
+    secret = "threadvault-default-viewer-secret-key-32bytes-min!"
+
+    # 1. Verify default expiry is 15 minutes (900 seconds)
+    token_1 = create_viewer_token(tid_1, "h5-account", secret=secret)
+    raw_b64 = token_1.split(".")[0] + "=" * (-len(token_1.split(".")[0]) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(raw_b64).decode("utf-8"))
+    assert payload["exp"] - int(time.time()) in range(890, 915)  # ~900s (15 min)
+
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost:8000") as client:
+            # 2. Expiry: An expired token cannot view or download
+            expired_token = create_viewer_token(tid_1, "h5-account", secret=secret, ttl_seconds=-10)
+            exp_view = await client.get(f"/v/{expired_token}")
+            assert exp_view.status_code == 403
+            assert "expired" in exp_view.json()["detail"].lower()
+
+            exp_dl = await client.get(f"/download/{tid_1}.md?token={expired_token}")
+            assert exp_dl.status_code == 403
+            assert "expired" in exp_dl.json()["detail"].lower()
+
+            # 3. Cross-thread reuse prevention: token for thread 1 cannot be used to download thread 2
+            cross_dl = await client.get(f"/download/{tid_2}.md?token={token_1}")
+            assert cross_dl.status_code == 403
+            assert "mismatch" in cross_dl.json()["detail"].lower() or "cannot be reused across threads" in cross_dl.json()["detail"].lower()
+
+            # 4. Download reuse prevention:
+            # First download with token_1 succeeds (200 OK)
+            dl_resp_1 = await client.get(f"/download/{tid_1}.md?token={token_1}")
+            assert dl_resp_1.status_code == 200
+            assert "Thread 1 query" in dl_resp_1.text
+
+            # Second download with the EXACT SAME token_1 fails with 403 (cannot be reused across downloads)
+            dl_resp_2 = await client.get(f"/download/{tid_1}.md?token={token_1}")
+            assert dl_resp_2.status_code == 403
+            assert "consumed" in dl_resp_2.json()["detail"].lower() or "cannot be reused across downloads" in dl_resp_2.json()["detail"].lower()

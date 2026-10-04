@@ -74,6 +74,9 @@ class VaultConfig:
     # Allowed hosts for Host header validation (Milestone H3)
     allowed_hosts: tuple[str, ...] = ("localhost", "127.0.0.1", "testserver")
 
+    # Viewer token TTL in seconds (Milestone H5, default 15m)
+    viewer_ttl_seconds: int = 900
+
     # ── Derived paths ──────────────────────────────────────────────────
 
     @property
@@ -179,5 +182,8 @@ def load_config() -> VaultConfig:
         if render_domain not in hosts:
             hosts.append(render_domain)
     kwargs["allowed_hosts"] = tuple(hosts)
+
+    if viewer_ttl_str := os.environ.get("THREADVAULT_VIEWER_TTL_SECONDS"):
+        kwargs["viewer_ttl_seconds"] = int(viewer_ttl_str)
 
     return VaultConfig(**kwargs)

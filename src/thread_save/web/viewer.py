@@ -32,15 +32,20 @@ VIEWER_SECRET_DEFAULT = os.environ.get(
     "THREADVAULT_VIEWER_SECRET",
     "threadvault-default-viewer-secret-key-32bytes-min!",
 )
+DEFAULT_VIEWER_TTL_SECONDS = int(
+    os.environ.get("THREADVAULT_VIEWER_TTL_SECONDS", "900")
+)  # 15 minutes default (§H5)
+
+_consumed_download_tokens: set[str] = set()
 
 
 def create_viewer_token(
     thread_id: str,
     account_id: str,
     secret: str = VIEWER_SECRET_DEFAULT,
-    ttl_seconds: int = 86400 * 7,
+    ttl_seconds: int = DEFAULT_VIEWER_TTL_SECONDS,
 ) -> str:
-    """Generate HMAC-SHA256 signed viewer token for a thread."""
+    """Generate HMAC-SHA256 signed viewer token bound to thread_id + account_id (§H5)."""
     payload = {
         "tid": thread_id,
         "acc": account_id,
@@ -274,7 +279,14 @@ def create_viewer_router(
                 tok_tid, tok_acc = verify_viewer_token(token, secret=secret)
                 if tok_tid != thread_id:
                     raise HTTPException(
-                        status_code=403, detail="Token thread ID mismatch"
+                        status_code=403,
+                        detail="Token thread ID mismatch: token cannot be reused across threads",
+                    )
+                sig = token.split(".")[1] if "." in token else token
+                if sig in _consumed_download_tokens:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Token already consumed: token cannot be reused across downloads",
                     )
                 target_account = tok_acc
             except ValueError as e:
@@ -299,6 +311,10 @@ def create_viewer_router(
         except Exception as e:
             logger.error("Error rendering thread markdown for download: %s", e)
             raise HTTPException(status_code=500, detail="Failed to render markdown")
+
+        if token:
+            sig = token.split(".")[1] if "." in token else token
+            _consumed_download_tokens.add(sig)
 
         return Response(
             content=md_content,

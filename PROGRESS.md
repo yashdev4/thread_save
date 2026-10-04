@@ -405,4 +405,30 @@
 - **Decisions Taken**:
   - Preserved the honest remote account context ("user's ThreadVault account") in `vault_save_turn` while matching all other descriptions and annotations to guarantee behavioral parity across stdio and HTTP clients.
 
+---
+
+## Milestone H5: Viewer Links Expiry & Token Reuse Prevention
+- **Status**: Completed
+- **Done When Criteria**:
+  - Viewer tokens bound cryptographically to `thread_id` + `account_id` via HMAC-SHA256 signature.
+  - Default TTL configured to 15 minutes (900 seconds), configurable via `THREADVAULT_VIEWER_TTL_SECONDS`.
+  - Tokens cannot be reused across threads (thread ID mismatch rejects with 403 Forbidden).
+  - Tokens cannot be reused across downloads (download tokens tracked and single-use, rejecting replay with 403 Forbidden).
+  - Tests verify expiration rejection, cross-thread rejection, and cross-download replay rejection.
+- **Files & Functions**:
+  - `src/thread_save/config.py`: Added `viewer_ttl_seconds: int = 900` to `VaultConfig` and loaded from `THREADVAULT_VIEWER_TTL_SECONDS` in `load_config()`.
+  - `src/thread_save/web/viewer.py`:
+    - Updated `create_viewer_token` default TTL to 15 minutes (`DEFAULT_VIEWER_TTL_SECONDS = 900`).
+    - Added single-use download consumption tracking (`_consumed_download_tokens`).
+    - Enforced strict checks in `/download/{thread_id}.md` rejecting cross-thread usage and consumed download token replays.
+  - `tests/test_viewer.py`: Added `test_h5_viewer_link_expiry_and_reuse_prevention` covering 15m default TTL assertion, expired token rejection on `/v/` and `/download/`, cross-thread reuse rejection, and single-use download consumption.
+- **Test Results**:
+  - `tests/test_viewer.py`: 5 passed, 0 failed.
+  - Full pytest suite: 75 passed in 106.23s (including both Hypothesis 1,000-example profiles).
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns, 0 gaps, 2 outbox jobs in `thread_save_test` database — Postgres fsck clear.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+- **Decisions Taken**:
+  - 15-minute default expiration balances sharing convenience during active conversations with minimizing data exposure windows.
+  - Download tokens are single-use: once consumed to stream markdown, the token cannot be reused for subsequent downloads, preventing URL leakage and replay.
+
 
