@@ -1,0 +1,37 @@
+# Fly.io configuration for ThreadVault Remote MCP Server (§2 S7, Milestone X8)
+
+app = "threadvault"
+primary_region = "iad" # US East (Ashburn/Virginia) - nearest to Anthropic cloud
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  APP_ENV = "production"
+  PORT = "8000"
+  THREADVAULT_MODE = "turn_start"
+  THREADVAULT_NUDGE = "off"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = false # CRITICAL: Always-on instance prevents cold starts (§2 S7)
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 250
+    soft_limit = 200
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  timeout = "5s"
+  path = "/health"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 1024

@@ -1,0 +1,28 @@
+# Render Blueprint for ThreadVault Remote MCP Server (§2 S7, Milestone X8)
+
+services:
+  - type: web
+    name: threadvault-web
+    runtime: docker
+    region: ohio # US East - low latency to Anthropic infrastructure
+    plan: starter # Paid starter tier ensures always-on instance without sleep/cold starts
+    dockerfilePath: Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: threadvault-db
+          property: connectionString
+      - key: APP_ENV
+        value: production
+      - key: THREADVAULT_JWT_SECRET
+        generateValue: true
+      - key: THREADVAULT_VIEWER_SECRET
+        generateValue: true
+
+databases:
+  - name: threadvault-db
+    region: ohio # Same region as web service
+    plan: starter
+    databaseName: threadvault
+    user: threadvault

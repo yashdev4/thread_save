@@ -203,3 +203,28 @@
   - Debounce window is set to 2 minutes (`interval '2 minutes'`) per spec §2 S2.
 - **Needs User**:
   - **Gate (c)**: Real Google Drive / GitHub OAuth credentials for live production upload.
+
+### Milestone X8: Deployment Readiness, Health Checks, Latency Budget & PITR
+- **Status**: Completed (Automated verification complete; External Gate (a) recorded under Needs User)
+- **Done When Criteria**:
+  - Multi-stage production `Dockerfile` with non-root security user, automated Alembic migration startup, and health check.
+  - Deployment configuration for Fly.io (`fly.toml`) and Render (`render.yaml`) enforcing always-on instances (`auto_stop_machines = false`) to eliminate cold starts.
+  - Server-side processing latency benchmarked with p95 < 300 ms across HTTP turn save operations.
+  - `/health` endpoint validates database connectivity and returns degraded state if disconnected.
+  - Production deployment, continuous WAL archiving, daily snapshots, and PITR documented in `docs/DEPLOYMENT.md`.
+- **Files & Functions**:
+  - `Dockerfile`: Production multi-stage container running migrations and Uvicorn with curl healthcheck.
+  - `fly.toml`: Fly.io configuration configured for US-East (`iad`) always-on machine.
+  - `render.yaml`: Render Blueprint configuration configured for US-East (`Ohio`) with same-region PostgreSQL.
+  - `docs/DEPLOYMENT.md`: Architecture overview, latency budget, WAL archiving, backup & PITR runbook, Fly.io & Render deployment steps.
+  - `tests/test_deployment_readiness.py`: 3 tests verifying `/health` probe (healthy & degraded), p95 latency (< 300 ms), and production config syntax.
+- **Test Results**:
+  - `tests/test_deployment_readiness.py`: 3 passed, 0 failed.
+  - Pytest full suite: 64 passed in 45.87s (including 1,000 Hypothesis examples in `tests/test_hypothesis_v2.py`).
+  - `run_tests.py`: 21 passed, 0 failed.
+  - fsck: Scanned 5 files across 2 threads (21 turns) in `vault_rich_fixture` - 0 errors, fsck clear.
+- **Decisions Taken**:
+  - Explicitly specified `auto_stop_machines = false` in Fly.io config to prevent 30-60s idle wake-up delays.
+  - Same-region co-location between web application and PostgreSQL database enforced to ensure p95 < 300 ms budget.
+- **Needs User**:
+  - **Gate (a)**: Live cloud instance provisioned and verified on Fly.io or Render with custom domain and SSL certificate.
