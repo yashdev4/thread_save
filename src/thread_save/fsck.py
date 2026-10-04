@@ -128,117 +128,138 @@ def verify_vault(vault_root: str | Path) -> int:
         return 1
 
 
+async def check_pg_fsck_conn(conn: asyncpg.Connection) -> tuple[list[str], dict[str, int]]:
+    """Check W-1 ... W-10 invariants directly on an active asyncpg connection.
+
+    Returns:
+        (violations, stats_dict)
+    """
+    violations: list[str] = []
+
+    # 1. Accounts (W-1)
+    acc_rows = await conn.fetch("SELECT id, slug, oauth_sub, created_at FROM accounts")
+    accounts_scanned = len(acc_rows)
+    account_ids = {str(r["id"]) for r in acc_rows}
+
+    # 2. Threads (W-1)
+    thread_rows = await conn.fetch(
+        """SELECT id, account_id, title, slug, created_at, updated_at,
+                  open_turn, paused, max_n, current_page, current_page_turns,
+                  current_page_bytes, delim
+           FROM threads"""
+    )
+    threads_scanned = len(thread_rows)
+
+    for t in thread_rows:
+        acc_id = str(t["account_id"])
+        if acc_id not in account_ids:
+            violations.append(f"W-1 Thread {t['id']}: account_id {acc_id} does not exist in accounts table")
+
+    # 3. Turns (W-1, W-2, W-3, W-4, W-6, W-7, W-9)
+    turn_rows = await conn.fetch(
+        """SELECT thread_id, n, role, body, fidelity, chars, hash,
+                  recovered, created_at, updated_at, page, turn_key, anchor
+           FROM turns
+           ORDER BY thread_id, n ASC, CASE WHEN role = 'user' THEN 0 ELSE 1 END ASC"""
+    )
+    turns_scanned = len(turn_rows)
+
+    # 4. Gaps
+    gap_rows = await conn.fetch("SELECT thread_id, n, state, requested, first_seen FROM gaps")
+    gaps_scanned = len(gap_rows)
+
+    # 5. Outbox
+    outbox_rows = await conn.fetch("SELECT thread_id, target, due_at, last_hash, attempts FROM outbox")
+    outbox_scanned = len(outbox_rows)
+
+    # 6. Tombstones (W-10)
+    tombstone_rows = await conn.fetch("SELECT thread_id FROM deleted_threads")
+    tombstoned_ids = {r["thread_id"] for r in tombstone_rows}
+    for t in thread_rows:
+        if t["id"] in tombstoned_ids:
+            violations.append(f"W-10 Thread {t['id']} exists in threads but is marked deleted in deleted_threads")
+    for tr in turn_rows:
+        if tr["thread_id"] in tombstoned_ids:
+            violations.append(f"W-10 Turn ({tr['thread_id']}, {tr['n']}, {tr['role']}) exists for deleted thread")
+
+    # Group turns by thread
+    threads_map = {t["id"]: t for t in thread_rows}
+    thread_ids_set = set(threads_map.keys())
+    turns_by_thread: dict[str, list[dict]] = {}
+    for tr in turn_rows:
+        turns_by_thread.setdefault(tr["thread_id"], []).append(tr)
+
+    for tid, t_turns in turns_by_thread.items():
+        if tid not in thread_ids_set:
+            violations.append(f"W-1 Turns exist for non-existent thread {tid}")
+            continue
+
+        t_nonce = threads_map[tid]["delim"] if tid in threads_map else None
+
+        turns_by_n: dict[int, dict[str, dict]] = {}
+        for tr in t_turns:
+            turns_by_n.setdefault(tr["n"], {})[tr["role"]] = tr
+
+            # W-7: Content hash validation
+            body = tr["body"] or ""
+            stored_hash = tr["hash"] or ""
+            full_hash = compute_content_hash(body)
+            short_hash = full_hash[:8]
+            if stored_hash and stored_hash not in ("00000000", "0" * 64):
+                if len(stored_hash) == 64 and stored_hash != full_hash:
+                    violations.append(
+                        f"W-7 Thread {tid} Turn {tr['n']} {tr['role']}: hash mismatch (stored {stored_hash} vs computed {full_hash})"
+                    )
+                elif len(stored_hash) != 64 and stored_hash != short_hash:
+                    violations.append(
+                        f"W-7 Thread {tid} Turn {tr['n']} {tr['role']}: hash mismatch (stored {stored_hash} vs computed {short_hash})"
+                    )
+
+            # W-9: Turn delimiter forgery prevention (valid thread nonce must never appear inside turn body)
+            if t_nonce and f"nonce={t_nonce}" in body and ("<!-- /turn" in body or "<!-- turn" in body):
+                violations.append(
+                    f"W-9 Thread {tid} Turn {tr['n']} {tr['role']}: body contains forged delimiter tag with valid thread nonce"
+                )
+
+        # W-2: Dense turn numbers from 1 to max_n
+        user_ns = sorted([n for n, roles in turns_by_n.items() if "user" in roles])
+        if user_ns:
+            if user_ns[0] != 1:
+                violations.append(f"W-2 Thread {tid}: Missing turn 1 (first user turn is {user_ns[0]})")
+            for expected_n in range(1, max(user_ns) + 1):
+                if expected_n not in turns_by_n or "user" not in turns_by_n[expected_n]:
+                    violations.append(f"W-2 Thread {tid}: Missing user turn {expected_n}")
+
+        # W-3: Assistant slot only exists if user slot exists
+        for n_val, roles in turns_by_n.items():
+            if "assistant" in roles and "user" not in roles:
+                violations.append(f"W-3 Thread {tid}: Turn {n_val} has assistant slot without user slot")
+
+            # W-6: User and assistant share same page
+            if "user" in roles and "assistant" in roles:
+                u_page = roles["user"]["page"]
+                a_page = roles["assistant"]["page"]
+                if u_page != a_page:
+                    violations.append(f"W-6 Thread {tid}: Turn {n_val} user page {u_page} != assistant page {a_page}")
+
+    stats = {
+        "accounts": accounts_scanned,
+        "threads": threads_scanned,
+        "turns": turns_scanned,
+        "gaps": gaps_scanned,
+        "outbox": outbox_scanned,
+    }
+    return violations, stats
+
+
 async def verify_pg_vault_async(dsn: str) -> int:
     """Check W-1 ... W-10 invariants directly against PostgreSQL tables."""
     print(f"Running fsck against PostgreSQL database...")
-    violations: list[str] = []
     conn = await asyncpg.connect(dsn)
     try:
-        # 1. Accounts (W-1)
-        acc_rows = await conn.fetch("SELECT id, slug, oauth_sub, created_at FROM accounts")
-        accounts_scanned = len(acc_rows)
-        account_ids = {str(r["id"]) for r in acc_rows}
-
-        # 2. Threads (W-1)
-        thread_rows = await conn.fetch(
-            """SELECT id, account_id, title, slug, created_at, updated_at,
-                      open_turn, paused, max_n, current_page, current_page_turns,
-                      current_page_bytes, delim
-               FROM threads"""
-        )
-        threads_scanned = len(thread_rows)
-
-        for t in thread_rows:
-            acc_id = str(t["account_id"])
-            if acc_id not in account_ids:
-                violations.append(f"W-1 Thread {t['id']}: account_id {acc_id} does not exist in accounts table")
-
-        # 3. Turns (W-1, W-2, W-3, W-4, W-6, W-7, W-9)
-        turn_rows = await conn.fetch(
-            """SELECT thread_id, n, role, body, fidelity, chars, hash,
-                      recovered, created_at, updated_at, page, turn_key, anchor
-               FROM turns
-               ORDER BY thread_id, n ASC, CASE WHEN role = 'user' THEN 0 ELSE 1 END ASC"""
-        )
-        turns_scanned = len(turn_rows)
-
-        # 4. Gaps
-        gap_rows = await conn.fetch("SELECT thread_id, n, state, requested, first_seen FROM gaps")
-        gaps_scanned = len(gap_rows)
-
-        # 5. Outbox
-        outbox_rows = await conn.fetch("SELECT thread_id, target, due_at, last_hash, attempts FROM outbox")
-        outbox_scanned = len(outbox_rows)
-
-        # 6. Tombstones (W-10)
-        tombstone_rows = await conn.fetch("SELECT thread_id FROM deleted_threads")
-        tombstoned_ids = {r["thread_id"] for r in tombstone_rows}
-        for t in thread_rows:
-            if t["id"] in tombstoned_ids:
-                violations.append(f"W-10 Thread {t['id']} exists in threads but is marked deleted in deleted_threads")
-        for tr in turn_rows:
-            if tr["thread_id"] in tombstoned_ids:
-                violations.append(f"W-10 Turn ({tr['thread_id']}, {tr['n']}, {tr['role']}) exists for deleted thread")
-
-        # Group turns by thread
-        thread_ids_set = {t["id"] for t in thread_rows}
-        turns_by_thread: dict[str, list[dict]] = {}
-        for tr in turn_rows:
-            turns_by_thread.setdefault(tr["thread_id"], []).append(tr)
-
-        for tid, t_turns in turns_by_thread.items():
-            if tid not in thread_ids_set:
-                violations.append(f"W-1 Turns exist for non-existent thread {tid}")
-                continue
-
-            turns_by_n: dict[int, dict[str, dict]] = {}
-            for tr in t_turns:
-                turns_by_n.setdefault(tr["n"], {})[tr["role"]] = tr
-
-                # W-7: Content hash validation
-                body = tr["body"] or ""
-                stored_hash = tr["hash"] or ""
-                full_hash = compute_content_hash(body) if body else "0" * 64
-                short_hash = full_hash[:8]
-                if stored_hash and stored_hash not in ("00000000", "0" * 64):
-                    if len(stored_hash) == 64 and stored_hash != full_hash:
-                        violations.append(
-                            f"W-7 Thread {tid} Turn {tr['n']} {tr['role']}: hash mismatch (stored {stored_hash} vs computed {full_hash})"
-                        )
-                    elif len(stored_hash) != 64 and stored_hash != short_hash:
-                        violations.append(
-                            f"W-7 Thread {tid} Turn {tr['n']} {tr['role']}: hash mismatch (stored {stored_hash} vs computed {short_hash})"
-                        )
-
-                # W-9: Turn delimiter forgery prevention
-                if "<!-- /turn" in body or "<!-- turn" in body:
-                    violations.append(
-                        f"W-9 Thread {tid} Turn {tr['n']} {tr['role']}: body contains unescaped turn delimiter tags"
-                    )
-
-            # W-2: Dense turn numbers from 1 to max_n
-            user_ns = sorted([n for n, roles in turns_by_n.items() if "user" in roles])
-            if user_ns:
-                if user_ns[0] != 1:
-                    violations.append(f"W-2 Thread {tid}: Missing turn 1 (first user turn is {user_ns[0]})")
-                for expected_n in range(1, max(user_ns) + 1):
-                    if expected_n not in turns_by_n or "user" not in turns_by_n[expected_n]:
-                        violations.append(f"W-2 Thread {tid}: Missing user turn {expected_n}")
-
-            # W-3: Assistant slot only exists if user slot exists
-            for n_val, roles in turns_by_n.items():
-                if "assistant" in roles and "user" not in roles:
-                    violations.append(f"W-3 Thread {tid}: Turn {n_val} has assistant slot without user slot")
-
-                # W-6: User and assistant share same page
-                if "user" in roles and "assistant" in roles:
-                    u_page = roles["user"]["page"]
-                    a_page = roles["assistant"]["page"]
-                    if u_page != a_page:
-                        violations.append(f"W-6 Thread {tid}: Turn {n_val} user page {u_page} != assistant page {a_page}")
-
+        violations, stats = await check_pg_fsck_conn(conn)
         print(
-            f"Scanned {accounts_scanned} accounts, {threads_scanned} threads, {turns_scanned} turns, {gaps_scanned} gaps, {outbox_scanned} outbox jobs in database."
+            f"Scanned {stats['accounts']} accounts, {stats['threads']} threads, {stats['turns']} turns, {stats['gaps']} gaps, {stats['outbox']} outbox jobs in database."
         )
 
         if not violations:

@@ -15,6 +15,7 @@ from thread_save.storage.formatter import parse_page
 from thread_save.storage.path_resolver import ensure_vault_structure
 from thread_save.storage.pg_store import PgStore
 from thread_save.storage.writer import FileStore
+from thread_save.fsck import check_pg_fsck_conn
 
 # Spec constant (§3.4) modeled directly from specification
 SPEC_MAX_BODY_CHARS = 100_000
@@ -23,6 +24,8 @@ SECRET_TOKEN = "SUPER_SECRET_KEY_1234567890"
 TEST_DSN = os.environ.get(
     "DATABASE_URL", "postgresql://postgres:@127.0.0.1:5432/thread_save_test"
 )
+
+LARGEST_PG_STATE = {"accounts": 0, "threads": 0, "turns": 0}
 
 settings.register_profile("normal", max_examples=1000, deadline=None)
 settings.register_profile("nightly", max_examples=10000, deadline=None)
@@ -258,6 +261,18 @@ def _run_hypothesis_iteration(store_type: str, ops):
                     computed = compute_content_hash(turn.body)
                     assert turn.content_hash == computed or turn.content_hash == computed[:8]
 
+            # F1: Run fsck checks on PostgreSQL connection after every example
+            async with pg_store.pool.acquire() as conn:
+                violations, fsck_stats = await check_pg_fsck_conn(conn)
+                assert not violations, f"Postgres fsck violations after Hypothesis iteration: {violations}"
+                global LARGEST_PG_STATE
+                if fsck_stats["accounts"] > LARGEST_PG_STATE["accounts"]:
+                    LARGEST_PG_STATE["accounts"] = fsck_stats["accounts"]
+                if fsck_stats["threads"] > LARGEST_PG_STATE["threads"]:
+                    LARGEST_PG_STATE["threads"] = fsck_stats["threads"]
+                if fsck_stats["turns"] > LARGEST_PG_STATE["turns"]:
+                    LARGEST_PG_STATE["turns"] = fsck_stats["turns"]
+
     loop.run_until_complete(run())
 
 
@@ -267,9 +282,18 @@ def test_hypothesis_model(store_type, ops):
     _run_hypothesis_iteration(store_type, ops)
 
 
+def test_report_largest_scanned_state():
+    """F1: Report the largest state scanned (accounts/threads/turns)."""
+    print(
+        f"\n[F1 LARGEST SCANNED STATE] Accounts: {LARGEST_PG_STATE['accounts']}, "
+        f"Threads: {LARGEST_PG_STATE['threads']}, Turns: {LARGEST_PG_STATE['turns']}"
+    )
+
+
 if __name__ == "__main__":
     print("Running Hypothesis normal profile on FileStore (1,000 examples)...")
     _run_hypothesis_iteration("file", [{"type": "new", "query": "hello", "resp": "world", "client_turn": 1}])
     print("Running Hypothesis normal profile on PgStore (1,000 examples)...")
     _run_hypothesis_iteration("pg", [{"type": "new", "query": "hello", "resp": "world", "client_turn": 1}])
+    print(f"Largest PgStore state scanned: {LARGEST_PG_STATE}")
     print("Hypothesis normal profile passed cleanly!")

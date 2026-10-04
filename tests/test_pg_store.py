@@ -23,6 +23,7 @@ from thread_save.config import VaultConfig
 from thread_save.models import Fidelity
 from thread_save.service import TurnService
 from thread_save.storage.pg_store import PgStore
+from thread_save.fsck import check_pg_fsck_conn
 
 
 TEST_DSN = os.environ.get(
@@ -352,6 +353,11 @@ async def test_pg_advisory_lock_concurrency(pg_store):
 
     stats = await pg_store.stats("test-user", tid)
     assert stats.total_turns >= 10
+
+    # F1: Run fsck checks at the end of the concurrency test
+    async with pg_store.pool.acquire() as conn:
+        violations, fsck_stats = await check_pg_fsck_conn(conn)
+        assert not violations, f"Postgres fsck violations after concurrency test: {violations}"
 
 
 @pytest.mark.asyncio

@@ -50,7 +50,7 @@ class VaultConfig:
     chunk_timeout_seconds: int = 300  # 5 minutes
 
     # Slug constraints
-    slug_max_chars: int = 40
+    slug_max_chars: int = 20
     path_max_chars: int = 240
 
     # Redaction (§7.2)

@@ -5,6 +5,7 @@ import sys
 import os
 import tempfile
 import shutil
+from pathlib import Path
 
 # Redirect stdout before importing server
 _real_stdout = sys.stdout
@@ -24,7 +25,7 @@ async def test_full_flow():
         from thread_save.index.sqlite_index import ThreadIndex
         from thread_save.security.sanitizer import sanitize_slug
         from thread_save.security.redactor import redact_text
-        from thread_save.security.idempotency import compute_turn_hash, IdempotencyRing
+        from thread_save.security.idempotency import compute_content_hash, SlotIndex, WriteAction
 
         # ── Test sanitizer ──
         assert sanitize_slug("../../../etc/passwd") == "etcpasswd"
@@ -41,10 +42,15 @@ async def test_full_flow():
         print("[PASS] Redactor")
 
         # ── Test idempotency ──
-        ring = IdempotencyRing(capacity=3)
-        h = compute_turn_hash("hello", "world")
-        assert ring.check_and_record("t1", h) is True  # First time: new
-        assert ring.check_and_record("t1", h) is False  # Second time: duplicate
+        slot_index = SlotIndex()
+        from thread_save.models import SlotKey, Fidelity
+        k = SlotKey(1, "user")
+        h = compute_content_hash("hello")
+        act1 = slot_index.evaluate("t1", k, h, Fidelity.VERBATIM, len("hello"))
+        assert act1 == WriteAction.WRITE_NEW
+        slot_index.record("t1", k, h, Fidelity.VERBATIM, len("hello"))
+        act2 = slot_index.evaluate("t1", k, h, Fidelity.VERBATIM, len("hello"))
+        assert act2 == WriteAction.NO_OP
         print("[PASS] Idempotency")
 
         # ── Test config ──
@@ -63,57 +69,44 @@ async def test_full_flow():
         # ── Test write engine ──
         engine = WriteEngine(config)
 
-        # thread_open
-        result1 = await engine.thread_open(
-            title_hint="Testing Postgres Bulk Inserts",
-            tags=["postgres", "python"],
-        )
-        assert result1["thread_id"]
-        assert result1["page"] == 1
-        assert os.path.exists(result1["path"])
-        thread_id = result1["thread_id"]
-        print(f"[PASS] thread_open -> {thread_id}")
-
-        # save_turn (turn 1)
-        result2 = await engine.save_turn(
+        # save_turn (turn 1 - creates thread)
+        result1 = await engine.save_turn(
             user_query="How do I bulk insert 50k rows in asyncpg?",
-            assistant_response="Use `copy_records_to_table` for maximum throughput:\n\n```python\nawait conn.copy_records_to_table('transactions', records=data)\n```\n\nThis bypasses the normal INSERT pipeline.",
-            thread_id=thread_id,
-            model="claude-opus-4",
+            title_hint="Testing Postgres Bulk Inserts",
         )
-        assert result2["status"] == "success"
-        assert result2["turn_index"] == 1
-        print(f"[PASS] save_turn #1 -> page {result2['page']}, {result2['file_size_kb']} KB")
+        assert result1["ok"] is True
+        assert result1["thread_id"]
+        assert result1["n"] == 1
+        thread_id = result1["thread_id"]
+        print(f"[PASS] save_turn #1 -> {thread_id}")
 
         # save_turn (turn 2)
+        result2 = await engine.save_turn(
+            user_query="What if one record violates a unique constraint?",
+            prev_response="Use `copy_records_to_table` for maximum throughput.",
+            thread_id=thread_id,
+        )
+        assert result2["ok"] is True
+        assert result2["n"] == 2
+        print(f"[PASS] save_turn #2 -> n {result2['n']}")
+
+        # Duplicate detection / idempotent retry
         result3 = await engine.save_turn(
             user_query="What if one record violates a unique constraint?",
-            assistant_response="With `copy_records_to_table`, the entire batch rolls back on any constraint violation. To handle this gracefully, use `ON CONFLICT` with a staging table pattern.",
-            thread_id=thread_id,
-            model="claude-opus-4",
-        )
-        assert result3["status"] == "success"
-        assert result3["turn_index"] == 2
-        print(f"[PASS] save_turn #2 -> page {result3['page']}, {result3['file_size_kb']} KB")
-
-        # Duplicate detection
-        result4 = await engine.save_turn(
-            user_query="What if one record violates a unique constraint?",
-            assistant_response="With `copy_records_to_table`, the entire batch rolls back on any constraint violation. To handle this gracefully, use `ON CONFLICT` with a staging table pattern.",
+            prev_response="Use `copy_records_to_table` for maximum throughput.",
             thread_id=thread_id,
         )
-        assert result4["status"] == "duplicate_skipped"
+        assert result3["ok"] is True
+        assert result3["n"] == 2  # Idempotently matched existing turn 2
         print("[PASS] Duplicate detection")
 
         # Verify the markdown file content
-        with open(result1["path"], "r", encoding="utf-8") as f:
-            content = f.read()
-        assert "schema_version: 1" in content
-        assert f"thread_id: {thread_id}" in content
-        assert "## User" in content
-        assert "## Claude" in content
-        assert "<!-- turn i=1 role=user" in content
-        assert "<!-- /turn i=1 -->" in content
+        thread_files = list(Path(vault_root).rglob("*_p01.md"))
+        assert len(thread_files) > 0
+        content = thread_files[0].read_text(encoding="utf-8")
+        assert '"schema_version": 2' in content
+        assert thread_id in content
+        assert "User" in content
         assert "copy_records_to_table" in content
         print("[PASS] Markdown content verified")
 
@@ -127,7 +120,7 @@ async def test_full_flow():
             title="Testing Postgres Bulk Inserts",
             slug="testing-postgres-bulk-inserts",
             account="test-user",
-            path=result1["path"],
+            path=str(thread_files[0]),
             created=now,
             updated=now,
             tags=["postgres"],
@@ -144,9 +137,9 @@ async def test_full_flow():
         # thread_stats
         stats = engine.get_thread_stats(thread_id)
         assert stats is not None
-        assert stats["turn_count"] == 2
+        assert stats["total_turns"] == 4
         assert stats["pages"] == 1
-        print(f"[PASS] thread_stats -> {stats['turn_count']} turns, {stats['pages']} page(s)")
+        print(f"[PASS] thread_stats -> {stats['total_turns']} turns, {stats['pages']} page(s)")
 
         index.close()
 
@@ -155,10 +148,10 @@ async def test_full_flow():
         print("ALL TESTS PASSED")
         print("=" * 60)
         print(f"\nVault root: {vault_root}")
-        print(f"Thread file: {result1['path']}")
+        print(f"Thread file: {thread_files[0]}")
         print()
         print("--- File contents preview (first 50 lines) ---")
-        with open(result1["path"], "r", encoding="utf-8") as f:
+        with open(thread_files[0], "r", encoding="utf-8") as f:
             for i, line in enumerate(f):
                 if i >= 50:
                     print("... (truncated)")

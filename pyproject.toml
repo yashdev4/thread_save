@@ -20,6 +20,7 @@ thread-save-migrate = "thread_save.cli.migrate:main"
 packages = ["src/thread_save"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
