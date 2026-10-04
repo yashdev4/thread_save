@@ -720,6 +720,37 @@
   - Squashing to a single orphan root commit (`parents: []`) with `force: true` is the only force-push operation permitted in ThreadVault, allowing users to purge old deleted conversations from git history when desired.
   - Deletions are sent inline in the standard 3-request batch without needing separate blob operations.
 
+---
+
+## Milestone GH6: GitHub Auth & Token Lifecycle
+- **Status**: Completed
+- **Done When Criteria**:
+  - Fine-grained PAT 7-day expiration warning (`check_token_expiry()`) with configurable threshold.
+  - GitHub response header `github-authentication-token-expiration` captured and tracked on every API request.
+  - GitHub App installation token flow (`GitHubAppAuth.mint_installation_token()`) minting 1-hour tokens with RS256 JWT.
+  - Token encryption at rest using AES-256-GCM envelope encryption (`encrypt_field` / `decrypt_field`).
+  - Zero token leakage guarantee: tokens never appear in logs, exceptions, `__repr__`, or `events.jsonl` (scrubbed via regex mask `[REDACTED_GH_TOKEN]`).
+  - Tests verify: expiry warning fires at <= 7 days, response header updates expiry, App flow mints installation token, encryption at rest round-trips, and token string is strictly absent from logs, events, and exception strings.
+- **Files & Functions**:
+  - `src/thread_save/security/encryption.py`: Added `encrypt_field()` and `decrypt_field()` helpers using AES-256-GCM.
+  - `src/thread_save/export/auth.py`:
+    - `GitHubAuthManager`: Expiry checking, header tracking, encrypted token storage, preview masking.
+    - `GitHubAppAuth`: RSA private key loading and GitHub App JWT/installation token minting.
+    - `scrub_tokens()`: Regex-based redaction of all GitHub token formats (`ghp_`, `github_pat_`, `ghs_`, etc.).
+  - `src/thread_save/export/github.py`: Integrated `GitHubAuthManager` and token scrubbing into `GitHubDataApiTarget`, added custom `__repr__` preventing token leakage.
+  - `src/thread_save/export/__init__.py`: Exported auth symbols.
+  - `tests/test_github_auth.py`: 5 comprehensive tests validating all token lifecycle and security invariants.
+- **Test Results**:
+  - `tests/test_github_auth.py`: 5 passed, 0 failed in 0.54s.
+  - Full pytest suite: 103 passed, 3 deselected in 21.36s.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (19 turns) — fsck clear.
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns in database — Postgres fsck clear.
+- **Decisions Taken**:
+  - Fine-grained PATs include their expiration in the `github-authentication-token-expiration` response header; caching and updating this on every successful request ensures the 7-day warning is always based on the latest server timestamp without additional API calls.
+  - GitHub App tokens expire after 1 hour by GitHub design; caching with a 5-minute safety margin ensures seamless refreshes without auth failures.
+  - All token formats (`github_pat_*`, `ghp_*`, `ghs_*`, etc.) are redacted globally from any error messages or target string representations before being raised or logged.
+
+
 
 
 

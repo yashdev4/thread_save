@@ -61,3 +61,18 @@ def decrypt_body(ciphertext_b64: str, key: bytes) -> str:
         return decrypted.decode("utf-8")
     except Exception as e:
         raise ValueError(f"Decryption failed: {e}") from e
+
+
+def encrypt_field(plaintext: str, master_key: Union[str, bytes], account_id: str = "export") -> str:
+    """Encrypt a metadata or credential field using account-derived key."""
+    key = derive_account_key(master_key, account_id)
+    return "v1:" + encrypt_body(plaintext, key)
+
+
+def decrypt_field(ciphertext: str, master_key: Union[str, bytes], account_id: str = "export") -> str:
+    """Decrypt a metadata or credential field."""
+    if ciphertext.startswith("v1:"):
+        ciphertext = ciphertext[3:]
+    key = derive_account_key(master_key, account_id)
+    return decrypt_body(ciphertext, key)
+

@@ -33,6 +33,13 @@ from thread_save.export.sync import (
     REPO_SIZE_WARNING_THRESHOLD_KB,
 )
 
+from thread_save.export.auth import (
+    GitHubAppAuth,
+    GitHubAuthManager,
+    mask_token_preview,
+    scrub_tokens,
+)
+
 __all__ = [
     "ExportTarget",
     "GoogleDriveExportTarget",
@@ -58,7 +65,12 @@ __all__ = [
     "GitHubBatchExporter",
     "GitHubExportConfig",
     "REPO_SIZE_WARNING_THRESHOLD_KB",
+    "GitHubAuthManager",
+    "GitHubAppAuth",
+    "scrub_tokens",
+    "mask_token_preview",
 ]
+
 
 
 

@@ -20,7 +20,10 @@ import logging
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 import httpx
 
+from thread_save.export.auth import GitHubAuthManager, mask_token_preview, scrub_tokens
+
 logger = logging.getLogger("thread_save.export.github")
+
 
 # GitHub tree payload limit: 20 MB nominal
 MAX_TREE_PAYLOAD_BYTES = 20 * 1024 * 1024
@@ -97,12 +100,17 @@ class GitHubDataApiTarget:
         self.max_secondary_retries = max_secondary_retries
         self.base_backoff_seconds = base_backoff_seconds
         self.backoff_sleep_fn = backoff_sleep_fn or asyncio.sleep
+        self.auth_manager = GitHubAuthManager(token=token)
 
         # Rate limit tracking
         self.ratelimit_limit: Optional[int] = None
         self.ratelimit_remaining: Optional[int] = None
         self.ratelimit_reset: Optional[int] = None
         self.ratelimit_used: Optional[int] = None
+
+    def __repr__(self) -> str:
+        return f"GitHubDataApiTarget(repo={self.repo!r}, branch={self.branch!r}, token={mask_token_preview(self.token)!r})"
+
 
     def _get_headers(self) -> dict[str, str]:
         return {
@@ -160,6 +168,7 @@ class GitHubDataApiTarget:
                 json=json_data,
             )
             self._update_ratelimits(resp.headers)
+            self.auth_manager.update_expiry_from_headers(resp.headers)
 
             if resp.status_code in (403, 429):
                 text_lower = resp.text.lower()
@@ -173,12 +182,12 @@ class GitHubDataApiTarget:
                     or "secret scanning" in text_lower
                 )
                 if is_push_protection:
-                    raise PushProtectionError(f"GitHub rejected push due to secret scanning: {resp.text}")
+                    raise PushProtectionError(f"GitHub rejected push due to secret scanning: {scrub_tokens(resp.text)}")
 
                 if is_secondary:
                     if retries >= self.max_secondary_retries:
                         raise SecondaryRateLimitError(
-                            f"GitHub secondary rate limit exceeded after {retries} retries: {resp.text}"
+                            f"GitHub secondary rate limit exceeded after {retries} retries: {scrub_tokens(resp.text)}"
                         )
                     retry_after = resp.headers.get("retry-after")
                     if retry_after:
@@ -202,9 +211,10 @@ class GitHubDataApiTarget:
                     continue
 
                 if self.ratelimit_remaining == 0:
-                    raise RateLimitExceededError(f"Primary rate limit exhausted: {resp.text}")
+                    raise RateLimitExceededError(f"Primary rate limit exhausted: {scrub_tokens(resp.text)}")
 
             return resp
+
 
     async def verify_private_repo(self, client: httpx.AsyncClient) -> dict[str, Any]:
         """Guard: verify repo exists and is strictly private (G6)."""
