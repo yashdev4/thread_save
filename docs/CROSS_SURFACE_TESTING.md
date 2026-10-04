@@ -47,25 +47,25 @@ this chat", skip it for that conversation.
 
 ---
 
-## 3. Automated Cross-Surface Test Runner
+## 3. Automated Cross-Surface Test Runner (Regression Test)
 
-A deterministic simulation script is provided in `scripts/cross_surface_test.py` to validate multi-device continuity, secret redaction, and chunk assembly.
+A deterministic regression test script is provided in `scripts/cross_surface_test.py` to validate multi-device continuity, secret redaction, and chunk assembly across simulated Desktop, Android, iOS, and Web clients.
 
-### Running Against Local Test Database
+### Running Against Local Test Database (Regression Test Mode)
 ```bash
 python scripts/cross_surface_test.py
 ```
 
-### Running Against Running Server
+### Running Against Live Remote Server (HTTP /mcp Mode)
 ```bash
 python scripts/cross_surface_test.py --url https://<your-threadvault-domain> --account your-account-slug
 ```
 
-### What the Script Verifies:
-- **Turns 1–5 (Claude Desktop):** Initiates session, tests turn-start lagged protocol, injects a test API key to verify pre-insert redaction, and streams a >6000 character code block in multiple chunks.
-- **Turns 6–8 (Claude Android):** Simulates user continuing the conversation on an Android phone, using the same `thread_id` and anchors, plus tests consecutive "continue" messages (W-5 idempotency key).
-- **Turn 9 (Claude iOS):** Continues conversation on an iPhone.
-- **Turn 10 (Claude Web):** Finalizes conversation on Claude Web.
+### What the Regression Script Verifies:
+- **Turns 1–5 (Claude Desktop Simulation):** Initiates session, tests turn-start lagged protocol, injects a test API key to verify pre-insert redaction, and streams a >6000 character code block in multiple chunks.
+- **Turns 6–8 (Claude Android Simulation):** Simulates user continuing the conversation on an Android phone, using the same `thread_id` and anchors, plus tests consecutive "continue" messages (W-5 idempotency key).
+- **Turn 9 (Claude iOS Simulation):** Continues conversation on an iPhone.
+- **Turn 10 (Claude Web Simulation):** Finalizes conversation on Claude Web.
 - **Invariants Checked:**
   - Thread count = 1 (0 split threads, split rate = 0.0%).
   - Total turns ≥ 10 with dense slot numbering (1..10) and 0 stubs (100% coverage).
@@ -76,12 +76,14 @@ python scripts/cross_surface_test.py --url https://<your-threadvault-domain> --a
 
 ## 4. Manual Live Scenario Protocol (§8.2)
 
-To manually certify a live production deployment across physical devices:
+To manually certify a live production deployment across physical devices using live remotely exposed endpoints:
 
 ### Phase A: Desktop Initiation (Turns 1–5)
 1. In Claude Desktop, start a new chat:
    > *"Let's design a distributed event-driven system architecture."*
-2. Verify in your ThreadVault dashboard or database that Turn 1 is created.
+2. Verify via the live remotely exposed server:
+   - Live health check: `GET https://<your-domain>/health` returns HTTP 200 with `status: "healthy"` and `database: "connected"`.
+   - Tool execution: In Claude Desktop, `vault_save_turn` returns `{"ok": true, "thread_id": "...", "n": 1}`.
 3. Continue for 3 turns on technical architecture details.
 4. **Redaction test:** In Turn 4, mention a test key:
    > *"For our sink connector, use api_key = 'test_key_live_abcdef1234567890abcdef1234567890'."*
@@ -99,26 +101,43 @@ To manually certify a live production deployment across physical devices:
    > *"continue"*
 5. Send final wrap-up prompt.
 
-### Phase C: Verification & Inspection
-1. Call `vault_stats` in chat or via server API to verify:
-   - `coverage_pct` ≥ 90%
-   - `split_rate` < 5%
-   - `gaps_open` = 0
-2. Locate the thread using `vault_find`:
-   - Open the signed viewer link (`/v/{token}`).
-   - Verify that all turns from both Desktop and Mobile appear in a single, contiguous, chronologically ordered transcript.
-   - Verify that the test API key is displayed as `[REDACTED:...]`.
-3. Download the canonical markdown file (`/download/{thread_id}.md`) and verify Plan v2 front matter and turn delimiter integrity.
+### Phase C: Live Remote Verification & Inspection
+All inspection is performed strictly against live remotely exposed HTTP endpoints:
+1. **Live Remote Stats Tool (`vault_stats` over `/mcp`):**
+   In Claude or via MCP client, invoke `vault_stats(thread_id="<thread_id>")`:
+   - `ok: true`
+   - `total_turns >= 10`
+   - `coverage_pct >= 90.0%`
+   - `split_rate < 5.0%`
+   - `gaps_open: []` (0 open gaps)
+   - `open_turn: null` (turn closed cleanly upon wrap-up)
+2. **Live Remote Find Tool (`vault_find` over `/mcp`):**
+   Invoke `vault_find(query="Distributed Architecture")`:
+   - `ok: true`
+   - Returns search hit with `viewer_url` (`/v/{token}`) and `download_url` (`/download/{thread_id}.md?token={token}`)
+   - Declares `search_mode: "full_text"` (or `search_mode: "titles_only"` if envelope encryption is active, with explanatory non-empty notice)
+3. **Live Web Viewer (`GET https://<your-domain>/v/{token}`):**
+   - Open the viewer URL in any mobile or desktop web browser.
+   - Verify that all 10 turns from both Desktop and Mobile appear in a single, contiguous, chronologically ordered HTML transcript.
+   - Verify that the test API key is displayed as `[REDACTED:...]` (raw key never rendered).
+   - Verify that the >6,000 character Kafka consumer code block is rendered complete and intact.
+4. **Live Markdown Export (`GET https://<your-domain>/download/{thread_id}.md?token={token}`):**
+   - Download the raw markdown archive.
+   - Verify Plan v2 YAML front matter (`schema_version: 2`, `thread_id`, `account`, `title`).
+   - Verify Plan v2 turn delimiters (`<!-- turn i=... -->` and `<!-- /turn i=... -->`).
+   - Replay check: attempting to download again with the same token returns HTTP 403 Forbidden (single-use token protection).
 
 ---
 
 ## 5. External Gate (e) Verification Checklist
 
-Before full production launch, confirm each item:
+Before full production launch, confirm each live remotely exposed feature:
 
-- [ ] **Connector Visibility:** Custom connector visible and active on Claude Web and Claude Desktop.
-- [ ] **Mobile Functionality:** Tool calls (`vault_save_turn`) observed firing on both iOS and Android apps.
-- [ ] **Cross-Device Continuity:** Switching from Desktop to Android mid-conversation updates the exact same `thread_id`.
-- [ ] **Zero Splits:** No duplicate or orphaned threads created upon device transition.
-- [ ] **Redaction Active:** Sensitive patterns scrubbed before database commit.
-- [ ] **Viewer Accessibility:** Signed HMAC web links accessible from mobile browser and desktop browser alike.
+- [ ] **Live Health Probe:** `GET https://<domain>/health` returns `status: "healthy"` and `database: "connected"`.
+- [ ] **Connector Visibility:** Remote connector URL `https://<domain>/mcp` active on Claude Web and Claude Desktop.
+- [ ] **Mobile Functionality:** Tool calls (`vault_save_turn`) observed firing on live iOS and Android apps.
+- [ ] **Cross-Device Continuity:** Switching from Desktop to Mobile mid-conversation updates the exact same `thread_id`.
+- [ ] **Zero Splits:** Single canonical thread maintained across device boundaries (`split_rate: 0%` via `vault_stats`).
+- [ ] **Pre-Insert Redaction:** Sensitive patterns scrubbed in live database and displayed as `[REDACTED:...]` in `/v/{token}`.
+- [ ] **Live Viewer Accessibility:** Signed HMAC web links (`/v/{token}`) render properly on both mobile and desktop browsers.
+- [ ] **Secure Download Stream:** `/download/{thread_id}.md?token={token}` delivers valid Plan v2 markdown with single-use replay protection.

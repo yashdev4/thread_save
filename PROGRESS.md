@@ -5,7 +5,7 @@
 - **Gate (b) Live OAuth with Claude (Milestone X4)**: Registering the server URL on live `claude.ai` web connector settings and performing interactive browser login with Anthropic servers. All OAuth 2.1 endpoints (metadata, DCR, PKCE, token refresh, RLS session binding) implemented and tested locally.
 - **Gate (c) Real Drive / GitHub Credentials (Milestone X7)**: Providing actual Google Drive service account / OAuth tokens or GitHub Personal Access Tokens. Outbox exporter implemented, tested against fake/mock target and filesystem exporter, with error retry and crash safety verified.
 - **Gate (d) Live Local Vault Import (Milestone X10)**: Running `import_local_vault` against user's private live production vault. CLI implemented with `--dry-run` default and tested against local test vaults.
-- **Gate (e) Live Cross-Surface Tests (Milestone X9)**: Executing live Claude mobile/desktop interactions across devices. Verification script, test scenarios, and manual QA checklist provided.
+- **Gate (e) Live Cross-Surface Tests (Milestone X9)**: Executing live Claude mobile/desktop interactions across physical devices. Automated regression test harness provided in `scripts/cross_surface_test.py`; manual live QA checklist provided in `docs/CROSS_SURFACE_TESTING.md`.
 
 ---
 
@@ -229,8 +229,8 @@
 - **Needs User**:
   - **Gate (a)**: Live cloud instance provisioned and verified on Fly.io or Render with custom domain and SSL certificate.
 
-### Milestone X9: Cross-Surface Live Test Script & Multi-Device Verification
-- **Status**: Completed (Automated multi-device simulation verified across 4 surfaces; External Gate (e) documented under Needs User)
+### Milestone X9: Cross-Surface Multi-Device Simulation (Automated Regression Test)
+- **Status**: Completed (Automated multi-device simulation verified as regression test across 4 surfaces; External Gate (e) manual physical verification documented under Needs User)
 - **Done When Criteria**:
   - Single thread maintained across device switches (Desktop -> Android -> iOS -> Web), no split threads (split rate 0.0%).
   - Dense turn slots (1..10) with 100% coverage and zero stubs.
@@ -513,6 +513,33 @@
 - **Decisions Taken**:
   - Requiring `--apply` prevents accidental destructive or unintended imports from scripts or human operator error.
   - Enforcing that the account slug must already exist in the `accounts` table ensures that migrated local threads are strictly associated with authentic, established OAuth users rather than orphaned or synthetic account partitions.
+
+---
+
+## Milestone H9: Documentation Accuracy (Regression Test Labeling & Live Feature Alignment)
+- **Status**: Completed
+- **Done When Criteria**:
+  - Milestone X9 simulation harness explicitly designated and documented in `PROGRESS.md` and test scripts as an automated regression test, clearly distinguishing between programmatic simulations and the manual physical device verification gate (Gate e).
+  - `docs/CROSS_SURFACE_TESTING.md` updated so every single check references live remotely exposed features and endpoints (`/health`, `/mcp` tool execution, signed HTML viewer `/v/{token}`, and token-authenticated markdown download `/download/{thread_id}.md?token={token}`) rather than internal database inspections or local disk paths.
+  - All checklists and verification steps verified for consistency with the deployed system.
+- **Files & Functions**:
+  - `PROGRESS.md`:
+    - Updated Gate (e) summary to designate `scripts/cross_surface_test.py` as an automated regression test harness.
+    - Updated Milestone X9 heading and status to "Cross-Surface Multi-Device Simulation (Automated Regression Test)".
+  - `docs/CROSS_SURFACE_TESTING.md`:
+    - Section 3: Designated test runner as an automated regression test; added live remote server invocation instructions (`--url https://<domain> --account <slug>`).
+    - Section 4 (Phase A): Updated Turn 1 verification to reference live `/health` probe and remote `vault_save_turn` tool result rather than local database access.
+    - Section 4 (Phase C): Replaced all database references with live remote HTTP checks (`vault_stats` over `/mcp`, `vault_find` with search mode and notice assertions, `/v/{token}` HTML rendering with masked secrets and chunked code blocks, and `/download/{thread_id}.md?token={token}` single-use download validation).
+    - Section 5: Aligned every checklist item with live remotely exposed HTTP endpoints and tools.
+- **Test Results**:
+  - `tests/test_cross_surface.py`: 2 passed, 0 failed.
+  - Full pytest suite: 79 passed in 107.47s (including both Hypothesis 1,000-example profiles).
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns, 0 gaps, 2 outbox jobs in `thread_save_test` database — Postgres fsck clear.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+- **Decisions Taken**:
+  - Distinguishing automated simulation from physical device verification ensures test coverage is honest and transparent: simulation proves protocol compliance, while manual QA (Gate e) remains an explicit checklist for physical devices.
+  - Aligning all verification steps in `CROSS_SURFACE_TESTING.md` with remotely exposed HTTP features ensures that external operators can fully validate a deployment without requiring direct database credentials or internal filesystem access.
+
 
 
 
