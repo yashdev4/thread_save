@@ -647,9 +647,34 @@
   - Full pytest suite: 88 passed, 0 failed in 20.26s.
   - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
   - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns in database — Postgres fsck clear.
+
+---
+
+## Milestone GH3: Commit Policy, Settle Window & Unchanged-Page Skip
+- **Status**: Completed
+- **Done When Criteria**:
+  - Settle window enforces export only when a thread has had no writes for `settle_minutes` (default 30m).
+  - Batch cadence batches all settled threads into a single atomic commit.
+  - Exactly one in-flight batch per repository (asyncio lock per repository).
+  - Unchanged-page skip: page hash comparison against export manifest ensures closed sticky pages (W-6) are never re-sent.
+  - Deterministic commit message: `vault: X threads, Y pages (batch YYYY-MM-DDTHH:MMZ)`.
+  - Repo growth guard: checks repository size from GitHub metadata and logs warning if size exceeds 750 MB (768,000 KB).
+  - Tests verify: 10 saves within settle produce exactly 1 commit; closed pages never re-sent.
+- **Files & Functions**:
+  - `src/thread_save/export/sync.py`:
+    - `GitHubExportConfig`: Configuration dataclass with settle window, batch minutes, size warning threshold.
+    - `GitHubBatchExporter`: Implements `is_thread_due`, `check_repo_size_guard`, manifest hash checking, unchanged-page skipping, deterministic commit messages, and per-repo concurrency locking.
+  - `src/thread_save/export/__init__.py`: Exported sync symbols.
+  - `tests/test_github_sync.py`: Tests for 10 saves within settle -> 1 commit, closed page skipping across successive exports, and 750MB growth guard warning.
+- **Test Results**:
+  - `tests/test_github_sync.py`: 3 passed, 0 failed in 0.58s.
+  - Full pytest suite: 91 passed, 0 failed in 20.19s.
+  - `fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+  - `fsck --dsn`: Scanned 1 accounts, 2 threads, 4 turns in database — Postgres fsck clear.
 - **Decisions Taken**:
-  - Links in monthly indexes use relative `../{page_path}` syntax so cross-linking works seamlessly both when browsed directly on GitHub.com and when cloned into local markdown tools like Obsidian.
-  - Both FileStore and PgStore extractors reuse the canonical Plan v2 formatting logic to guarantee deterministic zero-diff parity.
+  - The 30-minute settle window prevents polluting git history with an excessive number of transient turn-by-turn commits, while sticky closed page caching avoids re-uploading completed conversation pages.
+  - In-flight locking per repository prevents race conditions between overlapping worker poll cycles.
+
 
 
 

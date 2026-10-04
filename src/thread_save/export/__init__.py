@@ -27,6 +27,12 @@ from thread_save.export.layout import (
     generate_threads_json,
 )
 
+from thread_save.export.sync import (
+    GitHubBatchExporter,
+    GitHubExportConfig,
+    REPO_SIZE_WARNING_THRESHOLD_KB,
+)
+
 __all__ = [
     "ExportTarget",
     "GoogleDriveExportTarget",
@@ -49,6 +55,10 @@ __all__ = [
     "generate_monthly_index",
     "generate_readme",
     "generate_threads_json",
+    "GitHubBatchExporter",
+    "GitHubExportConfig",
+    "REPO_SIZE_WARNING_THRESHOLD_KB",
 ]
+
 
 
