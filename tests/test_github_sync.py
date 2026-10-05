@@ -206,3 +206,41 @@ async def test_repo_size_growth_guard_warning():
     assert size_kb == 780 * 1024
     assert warning is True
     assert exporter.size_warning_active is True
+
+
+def test_d4_configurable_settle_and_batch_intervals_via_env(monkeypatch):
+    """Verify settle and batch intervals are configurable via environment variables (Milestone D4)."""
+    # 1. Defaults when environment variables are unset
+    monkeypatch.delenv("THREADVAULT_GH_SETTLE_MINUTES", raising=False)
+    monkeypatch.delenv("THREADVAULT_GH_BATCH_MINUTES", raising=False)
+    cfg_default = GitHubExportConfig(repo="test/repo", token="ghp_test")
+    assert cfg_default.settle_minutes == 30
+    assert cfg_default.batch_minutes == 10
+
+    # 2. Configurable via environment variables (e.g. 1/1 for testing)
+    monkeypatch.setenv("THREADVAULT_GH_SETTLE_MINUTES", "1")
+    monkeypatch.setenv("THREADVAULT_GH_BATCH_MINUTES", "1")
+    cfg_test = GitHubExportConfig(repo="test/repo", token="ghp_test")
+    assert cfg_test.settle_minutes == 1
+    assert cfg_test.batch_minutes == 1
+
+    # 3. Explicit arguments override environment defaults
+    cfg_explicit = GitHubExportConfig(
+        repo="test/repo",
+        token="ghp_test",
+        settle_minutes=5,
+        batch_minutes=2,
+    )
+    assert cfg_explicit.settle_minutes == 5
+    assert cfg_explicit.batch_minutes == 2
+
+    # 4. Behavioral verification: 1m settle window marks thread due after 61 seconds
+    target = GitHubDataApiTarget(repo="test/repo", token="ghp_test")
+    exporter = GitHubBatchExporter(target=target, config=cfg_test)
+    ref_now = datetime(2026, 10, 5, 12, 5, 0, tzinfo=timezone.utc)
+    t_updated = ref_now - timedelta(seconds=65)  # 65 seconds ago (> 1 minute)
+    assert exporter.is_thread_due(t_updated, now=ref_now) is True
+
+    t_recent = ref_now - timedelta(seconds=30)  # 30 seconds ago (< 1 minute)
+    assert exporter.is_thread_due(t_recent, now=ref_now) is False
+

@@ -941,23 +941,23 @@
 - **Test Results**:
   - `tests/test_report_postgres.py`: 3 passed in 1.85s.
   - `run_tests.py`: 21 passed in 2.75s.
-  - `python -m thread_save.fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+  - `python -m thread_save.fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) - fsck clear.
 
+---
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+## Milestone D4: Faster GitHub Updates for Testing
+- **Status**: Completed
+- **Done When Criteria**:
+  - GitHub settle and batch intervals are configurable via environment variables (`THREADVAULT_GH_SETTLE_MINUTES`, `THREADVAULT_GH_BATCH_MINUTES`).
+  - Defaults remain 30 minutes for settle and 10 minutes for batch.
+  - Documented in `docs/DEPLOYMENT.md` that 1/1 (1 min settle / 1 min batch) is strictly for testing.
+  - Verified via tests asserting env var parsing and testing behavior.
+- **Files & Functions**:
+  - `src/thread_save/export/sync.py`: Updated `GitHubExportConfig` dataclass to use `field(default_factory=...)` inspecting `THREADVAULT_GH_SETTLE_MINUTES` and `THREADVAULT_GH_BATCH_MINUTES`.
+  - `docs/DEPLOYMENT.md`: Documented `THREADVAULT_GH_SETTLE_MINUTES` and `THREADVAULT_GH_BATCH_MINUTES` in environment variable table with testing note.
+  - `tests/test_github_sync.py`: Added `test_d4_configurable_settle_and_batch_intervals_via_env`.
+- **Test Results**:
+  - `tests/test_github_sync.py`: 4 passed in 0.28s.
+  - `run_tests.py`: 21 passed in 2.76s.
+  - Pytest full suite: 71 passed in 48.65s (including Hypothesis 1,000 examples).
+  - `python -m thread_save.fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) - fsck clear.

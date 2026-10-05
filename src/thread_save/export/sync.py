@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
+import os
 from typing import Any, Optional
 
 import httpx
@@ -37,14 +38,45 @@ logger = logging.getLogger("thread_save.export.sync")
 REPO_SIZE_WARNING_THRESHOLD_KB = 750 * 1024
 
 
+def _default_settle_minutes() -> int:
+    """Read THREADVAULT_GH_SETTLE_MINUTES from environment, defaulting to 30 (§1 G4)."""
+    val = os.environ.get("THREADVAULT_GH_SETTLE_MINUTES")
+    if val is not None and val.strip():
+        try:
+            return int(val.strip())
+        except ValueError:
+            pass
+    return 30
+
+
+def _default_batch_minutes() -> int:
+    """Read THREADVAULT_GH_BATCH_MINUTES from environment, defaulting to 10 (§1 G4)."""
+    val = os.environ.get("THREADVAULT_GH_BATCH_MINUTES")
+    if val is not None and val.strip():
+        try:
+            return int(val.strip())
+        except ValueError:
+            pass
+    return 10
+
+
 @dataclass
 class GitHubExportConfig:
-    """Configuration for GitHub archive export commit policy."""
+    """Configuration for GitHub archive export commit policy (§1 G4).
+
+    Settling & batch cadence can be customized via environment variables:
+    - THREADVAULT_GH_SETTLE_MINUTES (default: 30)
+    - THREADVAULT_GH_BATCH_MINUTES (default: 10)
+
+    NOTE: Setting settle_minutes / batch_minutes to 1/1 (e.g. 1m settle, 1m batch)
+    is strictly for rapid end-to-end integration testing and verification only.
+    In production, use standard windows (30m / 10m) to avoid repository bloat.
+    """
     repo: str
     token: str
     branch: str = "main"
-    settle_minutes: int = 30
-    batch_minutes: int = 10
+    settle_minutes: int = field(default_factory=_default_settle_minutes)
+    batch_minutes: int = field(default_factory=_default_batch_minutes)
     account_dir: bool = False
     size_warning_kb: int = REPO_SIZE_WARNING_THRESHOLD_KB
 
