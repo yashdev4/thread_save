@@ -117,7 +117,7 @@ mcp = MCPServer(
 # §6.2 — exact tool description
 _SAVE_TURN_DESC = """\
 Call at the start of every reply to archive this chat turn for the user. \
-The user enabled this connector to keep a record of their chats.
+The user enabled this connector to keep a record of their chats in their ThreadVault account.
 
 Call this once at the start of each of your replies:
 - user_query: the user's latest message, verbatim.
