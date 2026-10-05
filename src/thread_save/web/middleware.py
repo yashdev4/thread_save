@@ -175,16 +175,17 @@ class AccountContextMiddleware(BaseHTTPMiddleware):
                 )
 
         if not account:
-            from thread_save.web.startup import is_localhost_bound
+            from thread_save.web.startup import is_auth_paused, is_localhost_bound
             is_local = is_localhost_bound()
-            if not self.enforce_auth or is_local:
+            paused = is_auth_paused()
+            if not self.enforce_auth or is_local or paused:
                 if request.headers.get("x-account-id"):
                     account = request.headers.get("x-account-id")
                 elif request.query_params.get("account"):
                     account = request.query_params.get("account")
 
             if not account:
-                if self.enforce_auth and request.url.path.startswith("/mcp"):
+                if self.enforce_auth and not paused and request.url.path.startswith("/mcp"):
                     return JSONResponse(
                         status_code=401,
                         content={"detail": "Authentication required"},

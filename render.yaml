@@ -1,41 +1,33 @@
-# Render Blueprint for ThreadVault Remote MCP Server (§2 S7, Milestone X8)
+# Render Blueprint for ThreadVault Remote MCP Server (Standalone FileStore + GitHub Sync)
 
 services:
   - type: web
     name: threadvault-web
     runtime: docker
     region: ohio # US East - low latency to Anthropic infrastructure
-    plan: starter # Paid starter tier ensures always-on instance without sleep/cold starts
+    plan: starter # Starter tier prevents cold start spin-downs
     dockerfilePath: Dockerfile
-    preDeployCommand: python -m alembic upgrade head
     healthCheckPath: /health
+    disk:
+      name: threadvault-data
+      mountPath: /data/vault
+      sizeGB: 1
     envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: threadvault-db
-          property: connectionString
       - key: APP_ENV
         value: production
-      - key: THREADVAULT_JWT_SECRET
-        generateValue: true
-      - key: THREADVAULT_VIEWER_SECRET
-        generateValue: true
-      - key: THREADVAULT_SERVER_KEY
-        generateValue: true
-      - key: THREADVAULT_PUBLIC_URL
-        syncWithEnv: true
-      - key: GOOGLE_CLIENT_ID
-        syncWithEnv: true
-      - key: GOOGLE_CLIENT_SECRET
-        syncWithEnv: true
-      - key: THREADVAULT_SINGLE_TENANT
+      - key: THREADVAULT_STORAGE_BACKEND
+        value: file
+      - key: THREADVAULT_ROOT
+        value: /data/vault
+      - key: THREADVAULT_AUTH_PAUSED
         value: "true"
+      - key: THREADVAULT_ENFORCE_AUTH
+        value: "false"
+      - key: THREADVAULT_GH_REPO
+        value: "https://github.com/yashdev4/thread_vault.git"
+      - key: THREADVAULT_SYNC_INTERVAL_SECONDS
+        value: "60"
       - key: THREADVAULT_ALLOWED_HOSTS
-        value: "threadvault-web.onrender.com,onrender.com"
-
-databases:
-  - name: threadvault-db
-    region: ohio # Same region as web service
-    plan: starter
-    databaseName: threadvault
-    user: threadvault
+        value: "*"
+      - key: GITHUB_TOKEN
+        sync: false # Input your GitHub PAT in Render dashboard to sync threads to thread_vault

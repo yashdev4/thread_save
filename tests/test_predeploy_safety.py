@@ -88,18 +88,6 @@ def test_startup_check_names_all_missing_required_variables(monkeypatch):
         assert var in err_msg, f"Expected {var} to be named in error message"
 
 
-def test_startup_check_accepts_render_external_url(monkeypatch):
-    """Startup check accepts RENDER_EXTERNAL_URL as fallback for THREADVAULT_PUBLIC_URL."""
-    for var in REQUIRED_PROD_ENV_VARS:
-        monkeypatch.setenv(var, "mock_val")
-    monkeypatch.delenv("THREADVAULT_PUBLIC_URL", raising=False)
-    monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://threadvault-web.onrender.com")
-
-    # Should not raise
-    validate_startup_requirements(host="0.0.0.0", enforce_auth=True)
-
-
-
 # ── 3. Canonical THREADVAULT_PUBLIC_URL & Metadata Issuer ─────────────────
 
 

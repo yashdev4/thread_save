@@ -63,7 +63,7 @@ def get_public_url() -> str:
     Used for OAuth issuer, all metadata URLs, and Google redirect URI.
     Never derived from the incoming request in production.
     """
-    url = os.environ.get("THREADVAULT_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL")
+    url = os.environ.get("THREADVAULT_PUBLIC_URL")
     if url and url.strip():
         return url.strip().rstrip("/")
 
@@ -75,6 +75,11 @@ def get_public_url() -> str:
     return "http://localhost:8000"
 
 
+def is_auth_paused() -> bool:
+    """Check if authentication is explicitly paused for open testing/demo."""
+    return os.environ.get("THREADVAULT_AUTH_PAUSED", "false").strip().lower() in ("true", "1", "yes")
+
+
 def validate_startup_requirements(
     host: Optional[str] = None,
     enforce_auth: Optional[bool] = None,
@@ -83,6 +88,12 @@ def validate_startup_requirements(
 
     Raises RuntimeError with clear descriptions if safety rules are violated.
     """
+    if is_auth_paused():
+        logger.warning(
+            "THREADVAULT_AUTH_PAUSED=true: Authentication is paused. Server is running in open mode."
+        )
+        return
+
     is_local = is_localhost_bound(host)
 
     # 1. Resolve enforce_auth (defaults to true)
@@ -103,8 +114,6 @@ def validate_startup_requirements(
         missing: list[str] = []
         for var in REQUIRED_PROD_ENV_VARS:
             val = os.environ.get(var)
-            if var == "THREADVAULT_PUBLIC_URL" and not (val and val.strip()):
-                val = os.environ.get("RENDER_EXTERNAL_URL")
             if not val or not val.strip():
                 missing.append(var)
 
