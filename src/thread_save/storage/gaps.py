@@ -79,14 +79,17 @@ class GapTracker:
             key=lambda g: g.n,
         )
 
-        # Report up to limit
-        to_report = unreported[:limit]
+        # Report up to limit (cap 10, older ones marked lost per D2)
+        if len(unreported) > limit:
+            older = unreported[:-limit]
+            for g in older:
+                g.state = GapState.LOST
+            to_report = unreported[-limit:]
+        else:
+            to_report = unreported
+
         for g in to_report:
             g.requested = True
-
-        # Mark excess as lost (§I-6: beyond 10, they're outside context)
-        for g in unreported[limit:]:
-            g.state = GapState.LOST
 
         return [g.n for g in to_report]
 

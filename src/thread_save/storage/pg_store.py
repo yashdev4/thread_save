@@ -940,3 +940,37 @@ class PgStore:
                 )
                 turns.append(td)
             return turns
+
+    async def report_missing(self, account_id: str, thread_id: str, limit: int = 10) -> list[int]:
+        """Return open unreported gaps up to limit, marking older excess gaps as lost (§reliability plan B2/B3 D2)."""
+        if not self._pool:
+            return []
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT n FROM gaps
+                WHERE thread_id = $1 AND state = 'open' AND requested = false
+                ORDER BY n ASC
+                """,
+                thread_id,
+            )
+            unreported = [r["n"] for r in rows]
+            if len(unreported) > limit:
+                older = unreported[:-limit]
+                to_report = unreported[-limit:]
+                await conn.execute(
+                    "UPDATE gaps SET state = 'lost' WHERE thread_id = $1 AND n = ANY($2::int[])",
+                    thread_id,
+                    older,
+                )
+            else:
+                to_report = unreported
+
+            if to_report:
+                await conn.execute(
+                    "UPDATE gaps SET requested = true WHERE thread_id = $1 AND n = ANY($2::int[])",
+                    thread_id,
+                    to_report,
+                )
+            return to_report
+

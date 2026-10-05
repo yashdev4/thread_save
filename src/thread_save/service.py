@@ -371,7 +371,13 @@ class TurnService:
             result["continues"] = orig_bound_id
 
         # Check for open gaps to report back
-        if hasattr(self._store, "_gaps"):
+        if hasattr(self._store, "report_missing"):
+            missing = await self._store.report_missing(
+                account, bound_id, limit=self._config.max_missing_reported
+            )
+            if missing:
+                result["missing"] = missing
+        elif hasattr(self._store, "_gaps"):
             missing = self._store._gaps.report_missing(
                 bound_id, limit=self._config.max_missing_reported
             )

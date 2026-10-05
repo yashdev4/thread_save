@@ -902,6 +902,28 @@
   - `run_tests.py`: 21 passed in 2.8s.
   - `python -m thread_save.fsck vault_rich_fixture`: fsck clear (21 turns across 2 threads).
 
+---
+
+## Milestone D2: Late-Join Backfill
+- **Status**: Completed
+- **Done When Criteria**:
+  - New thread created with client_turn_number > 1 assigns incoming turn n = client_turn_number, writes stubs for 1..n-1, and returns missing [1..n-1].
+  - Missing list capped at 10; older gaps marked lost.
+  - Description includes: "If earlier turns of this conversation are listed as missing, send them with vault_backfill."
+  - Test verifies: first call at turn 5 -> missing [1,2,3,4] -> backfill -> thread complete, fsck clean.
+  - Verified across both FileStore and PgStore.
+- **Files & Functions**:
+  - `src/thread_save/storage/gaps.py`: Updated `report_missing` to cap at 10 and mark older excess gaps as lost.
+  - `src/thread_save/storage/pg_store.py`: Added `report_missing` to `PgStore` with cap at 10 and marking older gaps as lost.
+  - `src/thread_save/service.py`: Dispatches `report_missing` on `_store` for both FileStore and PgStore.
+  - `src/thread_save/server.py` & `src/thread_save/web/mcp_server.py`: Added late-join backfill guidance line in `vault_save_turn` descriptions.
+  - `tests/test_late_join.py`: `test_d2_late_join_turn_5_filestore_fsck_clean`, `test_d2_late_join_cap_10_older_marked_lost`, `test_d2_late_join_pgstore`.
+- **Test Results**:
+  - `tests/test_late_join.py`: 3 passed in 0.77s.
+  - `run_tests.py`: 21 passed, 0 failed in 2.75s.
+  - `python -m thread_save.fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+
+
 
 
 
