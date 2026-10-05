@@ -37,7 +37,7 @@ deliberately. At the start of each reply, call vault_save_turn as described in i
 description. If the user asks not to archive a conversation, stop calling it for that conversation."""
 
 _SAVE_TURN_DESC = """\
-Archive the conversation to the user's ThreadVault account. \
+Call at the start of every reply to archive this chat turn for the user. \
 The user enabled this connector to keep a record of their chats.
 
 Call this once at the start of each of your replies:
@@ -51,14 +51,15 @@ If prev_response is longer than about 6000 characters, send it in parts with chu
 is_final instead of shortening it.
 If a message contains passwords, API keys or similar secrets, replace them with [REDACTED] and \
 set fidelity to "abridged".
+If earlier turns of this conversation are listed as missing, send them with vault_backfill.
 If the result lists missing turns that are still in this conversation, send them with vault_backfill.
 If the user asks you to save the whole chat, send all turns still in the conversation with vault_backfill.
 If the user asks not to archive this conversation, stop calling this tool for the rest of it.
 Repeated or duplicate calls are safe and never create duplicate entries."""
 
 _BACKFILL_DESC = """\
-Add earlier turns to a ThreadVault thread: turns listed as missing by vault_save_turn, or the \
-whole conversation when the user asks to save it. Up to 10 turns per call; send more in further \
+Send earlier chat turns that vault_save_turn reported as missing. \
+Can also send the whole conversation when the user asks to save it. Up to 10 turns per call; send more in further \
 calls. Turns already archived are left unchanged, so resending is safe."""
 
 _FIND_DESC = """\
@@ -66,8 +67,8 @@ Search saved ThreadVault threads by keyword or list recent threads. Returns meta
 and short snippets only."""
 
 _STATS_DESC = """\
-Get coverage statistics for a ThreadVault thread: turn counts by fidelity, \
-gap status, and coverage percentage."""
+Get coverage statistics for a ThreadVault thread. \
+Reports turn counts by fidelity, gap status, and coverage percentage."""
 
 
 def create_http_mcp_server(service: TurnService) -> MCPServer:

@@ -879,6 +879,30 @@
   - `tests/test_instruction_style.py`: 3 passed, 0 failed in 1.01s.
   - `python -m thread_save.fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
 
+---
+
+## Milestone D1: First Line Tool Rule (<=80 Characters Neutral Openings)
+- **Status**: Completed
+- **Done When Criteria**:
+  - Every tool description opening states when to use it in <= 80 characters in neutral wording.
+  - `vault_save_turn` opening contains "every reply".
+  - Identically applied across stdio (`server.py`) and HTTP (`web/mcp_server.py`).
+  - Automated test asserts first sentence length <= 80 chars and "every reply" presence.
+- **Files & Functions**:
+  - `src/thread_save/server.py`: Updated `_SAVE_TURN_DESC`, `_BACKFILL_DESC`, `_FIND_DESC`, `_STATS_DESC`.
+  - `src/thread_save/web/mcp_server.py`: Updated `_SAVE_TURN_DESC`, `_BACKFILL_DESC`, `_FIND_DESC`, `_STATS_DESC`.
+  - `tests/test_instruction_style.py`: Added `test_d1_tool_description_openings_under_80_chars`.
+- **Exact New First Lines**:
+  - `vault_save_turn`: `"Call at the start of every reply to archive this chat turn for the user."` (72 chars)
+  - `vault_backfill`: `"Send earlier chat turns that vault_save_turn reported as missing."` (65 chars)
+  - `vault_find`: `"Search saved ThreadVault threads by keyword or list recent threads."` (67 chars)
+  - `vault_stats`: `"Get coverage statistics for a ThreadVault thread."` (48 chars)
+- **Test Results**:
+  - `tests/test_instruction_style.py`: 4 passed in 1.12s.
+  - `run_tests.py`: 21 passed in 2.8s.
+  - `python -m thread_save.fsck vault_rich_fixture`: fsck clear (21 turns across 2 threads).
+
+
 
 
 
