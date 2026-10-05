@@ -6,7 +6,7 @@ services:
     runtime: python
     region: ohio # US East - low latency to Anthropic infrastructure
     plan: starter # Starter tier prevents cold start spin-downs
-    buildCommand: pip install -r requirements.txt && pip install -e .
+    buildCommand: pip install -r requirements.txt && pip install .
     startCommand: uvicorn thread_save.web.app:create_app --factory --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'
     healthCheckPath: /health
     disk:
