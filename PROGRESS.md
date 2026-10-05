@@ -923,6 +923,27 @@
   - `run_tests.py`: 21 passed, 0 failed in 2.75s.
   - `python -m thread_save.fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
 
+---
+
+## Milestone D3: Coverage Diagnostics on Deployed PostgreSQL Store
+- **Status**: Completed
+- **Done When Criteria**:
+  - `python -m thread_save.report --dsn <dsn> --thread <id>` displays per-turn breakdown:
+    - Status: recorded or stub
+    - Save Type: routine save vs. backfill (or stub)
+    - Fidelity: verbatim, open, abridged, truncated, stub
+    - Totals: coverage %, recovered %, and first save turn (where routine save started).
+  - Same summary displayed for latest N threads (`--latest N`, defaulting to 5).
+  - Verified via unit tests and CLI subprocess invocation.
+- **Files & Functions**:
+  - `src/thread_save/report.py`: `generate_postgres_thread_report()`, `print_postgres_report()`, `run_postgres_diagnostics()`, and updated `main()` CLI argument handling (`--dsn`, `--thread`, `--latest`).
+  - `tests/test_report_postgres.py`: `test_d3_postgres_thread_report_details_and_totals`, `test_d3_postgres_latest_threads_summary`, `test_d3_postgres_report_cli_subprocess`.
+- **Test Results**:
+  - `tests/test_report_postgres.py`: 3 passed in 1.85s.
+  - `run_tests.py`: 21 passed in 2.75s.
+  - `python -m thread_save.fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+
+
 
 
 
