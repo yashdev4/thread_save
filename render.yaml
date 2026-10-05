@@ -1,12 +1,13 @@
-# Render Blueprint for ThreadVault Remote MCP Server (Standalone FileStore + GitHub Sync)
+# Render Blueprint for ThreadVault Remote MCP Server (Native Python runtime - No Docker)
 
 services:
   - type: web
     name: threadvault-web
-    runtime: docker
+    runtime: python
     region: ohio # US East - low latency to Anthropic infrastructure
     plan: starter # Starter tier prevents cold start spin-downs
-    dockerfilePath: Dockerfile
+    buildCommand: pip install -r requirements.txt && pip install -e .
+    startCommand: uvicorn thread_save.web.app:create_app --factory --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'
     healthCheckPath: /health
     disk:
       name: threadvault-data
