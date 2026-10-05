@@ -292,19 +292,24 @@ class GitHubDataApiTarget:
                 ref_resp = await self._request("GET", f"/repos/{self.repo}/git/ref/heads/{self.branch}", client)
                 if ref_resp.status_code == 404:
                     ref_resp = await self._request("GET", f"/repos/{self.repo}/git/refs/heads/{self.branch}", client)
-                if ref_resp.status_code != 200:
+
+                if ref_resp.status_code in (404, 409):
+                    # Repository is brand new / empty
+                    head_sha = None
+                    base_tree_sha = None
+                elif ref_resp.status_code == 200:
+                    head_sha = ref_resp.json()["object"]["sha"]
+                    # Step 2: Read base tree sha
+                    commit_resp = await self._request("GET", f"/repos/{self.repo}/git/commits/{head_sha}", client)
+                    if commit_resp.status_code != 200:
+                        raise GitHubExportError(
+                            f"Failed to read commit {head_sha}: {commit_resp.status_code} {commit_resp.text}"
+                        )
+                    base_tree_sha = commit_resp.json()["tree"]["sha"]
+                else:
                     raise GitHubExportError(
                         f"Failed to read head ref for branch {self.branch}: {ref_resp.status_code} {ref_resp.text}"
                     )
-                head_sha = ref_resp.json()["object"]["sha"]
-
-                # Step 2: Read base tree sha
-                commit_resp = await self._request("GET", f"/repos/{self.repo}/git/commits/{head_sha}", client)
-                if commit_resp.status_code != 200:
-                    raise GitHubExportError(
-                        f"Failed to read commit {head_sha}: {commit_resp.status_code} {commit_resp.text}"
-                    )
-                base_tree_sha = commit_resp.json()["tree"]["sha"]
 
                 # Conflict detection (G5)
                 conflicts: list[str] = []
@@ -360,10 +365,9 @@ class GitHubDataApiTarget:
                         })
                         deleted_count += 1
 
-                tree_payload = {
-                    "base_tree": base_tree_sha,
-                    "tree": tree_items,
-                }
+                tree_payload: dict[str, Any] = {"tree": tree_items}
+                if base_tree_sha is not None:
+                    tree_payload["base_tree"] = base_tree_sha
 
                 tree_resp = await self._request(
                     "POST", f"/repos/{self.repo}/git/trees", client, json_data=tree_payload
@@ -384,7 +388,7 @@ class GitHubDataApiTarget:
                 commit_payload = {
                     "message": commit_message,
                     "tree": new_tree_sha,
-                    "parents": [head_sha],
+                    "parents": [head_sha] if head_sha else [],
                 }
                 new_commit_resp = await self._request(
                     "POST", f"/repos/{self.repo}/git/commits", client, json_data=commit_payload
@@ -395,7 +399,29 @@ class GitHubDataApiTarget:
                     )
                 new_commit_sha = new_commit_resp.json()["sha"]
 
-                # Step 5: Update ref with force=false (Write #3)
+                # Step 5: Update or create ref with force=false (Write #3)
+                if head_sha is None:
+                    # New repo initial branch creation
+                    create_resp = await self._request(
+                        "POST",
+                        f"/repos/{self.repo}/git/refs",
+                        client,
+                        json_data={"ref": f"refs/heads/{self.branch}", "sha": new_commit_sha},
+                    )
+                    if create_resp.status_code in (200, 201):
+                        return GitHubBatchResult(
+                            commit_sha=new_commit_sha,
+                            tree_sha=new_tree_sha,
+                            files_written=written_count,
+                            files_deleted=deleted_count,
+                            conflicts=conflicts,
+                            restarts=restarts,
+                            blob_shas=returned_blob_shas,
+                        )
+                    raise GitHubExportError(
+                        f"Failed to create initial ref for branch {self.branch}: {create_resp.status_code} {create_resp.text}"
+                    )
+
                 ref_payload = {
                     "sha": new_commit_sha,
                     "force": False,

@@ -44,8 +44,23 @@ async def run_sync_once(
         logger.warning("Invalid GitHub repository format: %r (expected 'owner/repo')", repo)
         return None
 
-    # 1. Extract markdown vault tree
-    tree = extract_filestore_export_tree(vault_root)
+    # 1. Extract markdown vault tree across accounts
+    if not vault_root.exists():
+        return None
+
+    accounts = [
+        d.name for d in vault_root.iterdir()
+        if d.is_dir() and not d.name.startswith(('.', '_'))
+    ]
+    if not accounts:
+        accounts = ["default"]
+
+    tree: dict[str, str] = {}
+    multi_account = len(accounts) > 1
+    for acc in accounts:
+        acc_tree = extract_filestore_export_tree(vault_root, account=acc, account_dir=multi_account)
+        tree.update(acc_tree)
+
     # Check if we have actual threads (tree has more than just README / empty index)
     has_threads = any(
         k.endswith(".md") and not k.startswith("README") and not k.startswith("index/")
@@ -58,27 +73,29 @@ async def run_sync_once(
     entries = [GitHubFileEntry(path=p, content=c) for p, c in tree.items()]
     target = GitHubDataApiTarget(repo=clean_repo, token=token, branch=branch)
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        try:
-            # Check private repo guard
-            await target.verify_private_repo(client)
-            result = await target.export_batch(entries, client=client)
-            logger.info(
-                "Successfully exported %d files to %s (commit %s)",
-                result.files_written,
-                clean_repo,
-                result.commit_sha[:8] if result.commit_sha else "none",
-            )
-            return result
-        except PublicRepoRefusedError as e:
-            logger.error("GitHub export refused: %s", e)
-            return None
-        except GitHubExportError as e:
-            logger.error("GitHub export error for %s: %s", clean_repo, e)
-            return None
-        except Exception as e:
-            logger.error("Unexpected error syncing threads to GitHub: %s", e, exc_info=True)
-            return None
+    try:
+        allow_public = os.environ.get("THREADVAULT_ALLOW_PUBLIC_REPO", "true").strip().lower() in ("true", "1", "yes")
+        result = await target.push_batch(
+            files=entries,
+            commit_message=f"vault: automated sync ({len(entries)} files)",
+            verify_private=(not allow_public),
+        )
+        logger.info(
+            "Successfully exported %d files to %s (commit %s)",
+            result.files_written,
+            clean_repo,
+            result.commit_sha[:8] if result.commit_sha else "none",
+        )
+        return result
+    except PublicRepoRefusedError as e:
+        logger.error("GitHub export refused: %s", e)
+        return None
+    except GitHubExportError as e:
+        logger.error("GitHub export error for %s: %s", clean_repo, e)
+        return None
+    except Exception as e:
+        logger.error("Unexpected error syncing threads to GitHub: %s", e, exc_info=True)
+        return None
 
 
 async def start_github_sync_loop(
