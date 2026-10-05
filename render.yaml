@@ -22,16 +22,16 @@ services:
         generateValue: true
       - key: THREADVAULT_SERVER_KEY
         generateValue: true
+      - key: THREADVAULT_PUBLIC_URL
+        syncWithEnv: true
+      - key: GOOGLE_CLIENT_ID
+        syncWithEnv: true
+      - key: GOOGLE_CLIENT_SECRET
+        syncWithEnv: true
       - key: THREADVAULT_SINGLE_TENANT
         value: "true"
       - key: THREADVAULT_ALLOWED_HOSTS
         value: "threadvault-web.onrender.com,onrender.com"
-      - key: THREADVAULT_PUBLIC_URL
-        sync: false # Set to https://<service-name>.onrender.com
-      - key: GOOGLE_CLIENT_ID
-        sync: false
-      - key: GOOGLE_CLIENT_SECRET
-        sync: false
 
 databases:
   - name: threadvault-db

@@ -8,3 +8,5 @@ vault_*/
 test_results.txt
 hypothesis_out.txt
 *.log
+.env
+.env.*

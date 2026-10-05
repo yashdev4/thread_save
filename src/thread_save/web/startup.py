@@ -63,7 +63,7 @@ def get_public_url() -> str:
     Used for OAuth issuer, all metadata URLs, and Google redirect URI.
     Never derived from the incoming request in production.
     """
-    url = os.environ.get("THREADVAULT_PUBLIC_URL")
+    url = os.environ.get("THREADVAULT_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL")
     if url and url.strip():
         return url.strip().rstrip("/")
 
@@ -103,6 +103,8 @@ def validate_startup_requirements(
         missing: list[str] = []
         for var in REQUIRED_PROD_ENV_VARS:
             val = os.environ.get(var)
+            if var == "THREADVAULT_PUBLIC_URL" and not (val and val.strip()):
+                val = os.environ.get("RENDER_EXTERNAL_URL")
             if not val or not val.strip():
                 missing.append(var)
 
