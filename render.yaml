@@ -30,5 +30,11 @@ services:
         value: "60"
       - key: THREADVAULT_ALLOWED_HOSTS
         value: "*"
+      - key: THREADVAULT_JWT_SECRET
+        generateValue: true
+      - key: THREADVAULT_SERVER_KEY
+        generateValue: true
+      - key: THREADVAULT_VIEWER_SECRET
+        generateValue: true
       - key: GITHUB_TOKEN
         sync: false # Input your GitHub PAT in Render dashboard to sync threads to thread_vault

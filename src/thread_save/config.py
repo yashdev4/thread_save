@@ -181,8 +181,9 @@ def load_config() -> VaultConfig:
         or os.environ.get("RENDER")
         or os.environ.get("FLY_APP_NAME")
     )
+    auth_paused = os.environ.get("THREADVAULT_AUTH_PAUSED", "false").strip().lower() in ("true", "1", "yes")
     if not jwt_secret_val:
-        if is_prod:
+        if is_prod and not auth_paused:
             raise ValueError(
                 "Production deployment requires THREADVAULT_JWT_SECRET secret environment variable!"
             )

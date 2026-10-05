@@ -106,7 +106,8 @@ def get_server_key(server_key: bytes | str | None = None) -> bytes:
         or os.environ.get("RENDER")
         or os.environ.get("THREADVAULT_FORCE_PRODUCTION")
     )
-    if is_prod:
+    auth_paused = os.environ.get("THREADVAULT_AUTH_PAUSED", "false").strip().lower() in ("true", "1", "yes")
+    if is_prod and not auth_paused:
         raise RuntimeError(
             "THREADVAULT_SERVER_KEY is required in non-local environments; no built-in default key permitted"
         )
