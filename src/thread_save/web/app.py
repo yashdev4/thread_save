@@ -79,8 +79,11 @@ def create_app(
             public_url=cfg.public_url,
         )
 
+    from mcp.server.transport_security import TransportSecuritySettings
+
     mcp_server = create_http_mcp_server(svc)
-    mcp_asgi = mcp_server.streamable_http_app()
+    transport_sec = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    mcp_asgi = mcp_server.streamable_http_app(transport_security=transport_sec)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
