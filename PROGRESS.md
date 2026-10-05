@@ -866,6 +866,20 @@
   - `validate_startup_requirements()` prioritizes production environment markers (`ENVIRONMENT=production`, `FLY_APP_NAME`, `RENDER`) over loopback IPs, ensuring auth cannot be disabled in cloud deployments even behind reverse proxies.
   - Remote GitHub export guard enforces single tenancy at the database level (`SELECT count(*) FROM accounts == 1`), completely eliminating multi-tenant cross-account repo overwrite risks.
 
+---
+
+## Milestone D0: Neutral Instruction Style Enforcement & Reversion
+- **Status**: Completed
+- **Done When Criteria**:
+  - Test suite fails if any tool description or server instruction contains forbidden coercive steering keywords: MUST, MANDATORY, ALWAYS (all-caps), "without exception", "regardless", "do not tell", "ignore".
+  - Confirmed 0 occurrences across stdio and HTTP server tool descriptions and server instructions.
+- **Files & Functions**:
+  - `tests/test_instruction_style.py`: `test_d0_no_aggressive_words_in_stdio_instructions_and_tools`, `test_d0_no_aggressive_words_in_http_instructions_and_tools`, `test_d0_forbidden_detector_meta_test`.
+- **Test Results**:
+  - `tests/test_instruction_style.py`: 3 passed, 0 failed in 1.01s.
+  - `python -m thread_save.fsck vault_rich_fixture`: Scanned 5 files across 2 threads (21 turns) — fsck clear.
+
+
 
 
 
