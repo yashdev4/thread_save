@@ -10,3 +10,5 @@ hypothesis_out.txt
 *.log
 .env
 .env.*
+.docs/
+
