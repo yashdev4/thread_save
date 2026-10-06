@@ -17,7 +17,7 @@ import pytest
 from thread_save.config import CaptureMode, load_config
 from thread_save.fsck import check_pg_fsck_conn, verify_vault
 from thread_save.models import Fidelity
-from thread_save.service import TurnService, classify_reply
+from thread_save.service import TurnService, classify_reply, reply_shape
 from thread_save.storage.formatter import parse_page
 from thread_save.storage.pg_store import PgStore
 from thread_save.storage.writer import FileStore
@@ -60,6 +60,43 @@ def test_classify_reply():
     # Links, footnotes and checkboxes are ordinary content
     assert classify_reply("See [the docs](https://example.com/a/very/long/path/to/docs).") == Fidelity.REPORTED
     assert classify_reply("Done [1]\n- [x] item") == Fidelity.REPORTED
+
+
+# P1-15: real replies from chat eatz7d were one line of ~800-1050 chars like this
+FLATTENED = (
+    "Five key themes from September Study Time sessions: (1) company-wide server migration "
+    "nearly done (per-user setup emails); (2) onboarding and QA mostly good, version 4 prep "
+    "on Sep 30; (3) task ownership and workload rules set Sep 8; (4) data-quality issues "
+    "with duplicate invoices and missing product mapping; (5) access-tier leak in salary "
+    "data. Speakers: Sheenam, Ayan, Kriti, Priyanshi, Harsh, Yash. " * 2
+)
+
+
+def test_reply_shape_and_flattened_retellings():
+    assert reply_shape(FLATTENED) == "flattened"
+    assert classify_reply(FLATTENED) == Fidelity.ABRIDGED
+    inline_list = (
+        "Summary of the call with the vendor: (1) pricing agreed at the lower tier; "
+        "(2) delivery moves to March; (3) support contract still open and owned by finance; "
+        "follow-up next week with both teams, and the legal review of the renewal clause."
+    )
+    assert 200 < len(inline_list) < 600 and reply_shape(inline_list) == "flattened"
+    # Short one-liners and real paragraphs are ordinary replies
+    assert reply_shape("Pick (1) red or (2) blue.") == "plain"
+    assert reply_shape("word " * 100) == "plain"
+    assert reply_shape("First paragraph.\n\nSecond paragraph.") == "plain"
+    assert reply_shape("## Plan\n\n- fly\n- swim") == "markdown"
+    assert reply_shape("```py\nx = 1\n```") == "markdown"
+    assert classify_reply("## Plan\n\n- fly\n- swim") == Fidelity.REPORTED
+
+
+@pytest.mark.asyncio
+async def test_flattened_reply_is_stored_as_abridged(vault):
+    svc = _svc(vault)
+    r = await svc.log_turn(user_message="give me 5 key points", reply=FLATTENED)
+    assert (r["reply_fidelity"], r["reply_shape"]) == ("abridged", "flattened")
+    assert _slots(vault)[(1, "assistant")][0] == "abridged"
+    assert svc.stats(r["thread_id"])["fidelity_counts"]["abridged"] == 1
 
 
 # ── FileStore ─────────────────────────────────────────────────────────────

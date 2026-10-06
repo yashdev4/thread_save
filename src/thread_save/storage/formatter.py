@@ -84,6 +84,34 @@ def parse_front_matter(content: str) -> tuple[ThreadMeta, str]:
     return meta, remaining
 
 
+_ATTACHMENT_LINE_RE = re.compile(r"^\[[^\n]*— not archived\]$")
+
+
+def _turn_body(section: str, attachments: int = 0) -> str:
+    """The body of one turn block, exactly as format_turn wrote it (B3 WD).
+
+    format_turn writes a newline, "## <role>", a blank line, then one
+    "[… — not archived]" line plus a blank line per attachment (counted in the
+    header), then the body and a newline. Only that frame is removed, so the
+    body keeps its first-line indentation, inner blank lines and any bracketed
+    lines of its own.
+    """
+    lines = section.replace("\r\n", "\n").split("\n")
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i < len(lines) and lines[i].startswith("## "):
+        i += 1
+        if i < len(lines) and not lines[i].strip():
+            i += 1
+    for _ in range(attachments):
+        if i < len(lines) and _ATTACHMENT_LINE_RE.match(lines[i]):
+            i += 1
+            if i < len(lines) and not lines[i].strip():
+                i += 1
+    return "\n".join(lines[i:]).rstrip("\n")
+
+
 def parse_turns(content: str, nonce: str = "") -> list[TurnData]:
     """Parse turn blocks from markdown content, honouring only matching nonce delimiters (W6)."""
     turns: list[TurnData] = []
@@ -123,18 +151,10 @@ def parse_turns(content: str, nonce: str = "") -> list[TurnData]:
         ts_str = meta_dict.get("ts")
         ts = datetime.fromisoformat(ts_str) if ts_str else datetime.now().astimezone()
 
-        raw_body_section = content[open_m.end():close_m.start()]
-        lines = raw_body_section.strip().split("\n")
-        body_lines = []
-        skip_heading = True
-        for line in lines:
-            if skip_heading and line.startswith("## "):
-                skip_heading = False
-                continue
-            if line.startswith("[") and line.endswith("— not archived]"):
-                continue
-            body_lines.append(line)
-        body = "\n".join(body_lines).strip()
+        body = _turn_body(
+            content[open_m.end():close_m.start()],
+            int(meta_dict.get("attachments", 0) or 0),
+        )
 
         turns.append(TurnData(
             turn_index=turn_index,

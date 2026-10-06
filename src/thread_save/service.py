@@ -13,6 +13,7 @@ Contains all protocol logic:
 from __future__ import annotations
 
 import asyncio
+from difflib import SequenceMatcher
 import inspect
 import re
 import logging
@@ -53,35 +54,106 @@ def check_opt_out(text: str) -> bool:
 # "[Extended breakdown covering failure scenarios ...]" (P1-12). Links end in ")".
 _SUMMARY_LINE_RE = re.compile(r"^\s*\[[^\[\]]{30,}\]\s*$", re.M)
 
+# P1-15: a long reply squeezed onto one line ("Five key themes: (1) … (2) …") is a
+# retelling of the reply, not the formatted text the user saw.
+_FLATTENED_MIN_CHARS = 600
+_INLINE_LIST_MIN_CHARS = 200
+_INLINE_LIST_RE = re.compile(r"\(1\).*\(2\)|(?:^|\s)1[.)]\s.*\s2[.)]\s")
+_MARKDOWN_LINE_RE = re.compile(r"^\s{0,3}(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\||```|~~~)", re.M)
+
 # log_turn never creates more not_logged stubs than this in one call
 _MAX_NOT_LOGGED_PER_CALL = 50
+# E8-3: how loosely a model-copied previous-message anchor may match the stored one
+_ANCHOR_PREFIX_MIN = 16
+_ANCHOR_SIMILARITY = 0.8
+
+
+def _anchors_agree(sent: str, stored: str) -> bool:
+    """E8-3: does a model-sent previous-message anchor name the stored user turn?
+
+    The model copies "the first 80 characters" of a message it read earlier, so
+    small differences (cut short, a typo, changed punctuation) still count.
+    """
+    a, b = normalise_anchor(sent), normalise_anchor(stored)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    shorter = min(len(a), len(b))
+    if shorter >= _ANCHOR_PREFIX_MIN and (a.startswith(b) or b.startswith(a)):
+        return True
+    return SequenceMatcher(None, a, b).ratio() >= _ANCHOR_SIMILARITY
+
+
+async def _skipped_turn(txn, highest: int, prev_user_anchor: str | None) -> bool:
+    """E8-3: the previous-message anchor names a message the server never stored.
+
+    The model sends back the `next_turn` it was given, so a skipped call is not
+    visible in `turn`. It is visible here: the user's previous message is not the
+    latest stored one, and no stored turn has that anchor.
+    """
+    if not normalise_anchor(prev_user_anchor or ""):
+        return False
+    if highest < 1:
+        return True  # a first call made mid-chat: earlier messages exist
+    latest = await txn.user_anchor(highest)
+    if not latest:
+        return False  # nothing to compare with
+    if _anchors_agree(prev_user_anchor, latest):
+        return False
+    return await txn.match_anchor(prev_user_anchor) is None
 
 
 async def _is_same_turn(
     txn, slots, thread_id: str, n: int,
     user_message: str, prev_user_anchor: str | None, turn: int | None,
 ) -> bool:
-    """B7 E2b: is this log_turn call another call for turn n, the latest turn?
+    """B7 E2b/E8: is this log_turn call another call for turn n, the latest turn?
 
-    The user message must match turn n's. The previous-message anchor then tells a
-    repeat call (anchor = turn n-1) from a new turn that repeats the same words
-    (anchor = turn n). Without an anchor, only cases that cannot be a new turn
-    match: the first turn, a turn with no reply yet, or `turn` naming n itself.
-    A doubtful case is appended, which can duplicate but never loses a reply.
+    The user message must match turn n's. Call 2 of a reply sends the `turn`
+    that call 1 returned, which settles it (E8). Otherwise the previous-message
+    anchor tells a repeat call (anchor = turn n-1, or turn n-1 is a not-logged
+    stub) from a new turn that repeats the same words (anchor = turn n). Without
+    an anchor, only cases that cannot be a new turn match: the first turn or a
+    turn with no reply yet. A doubtful case is appended, which can duplicate but
+    never loses a reply.
     """
     if n < 1 or await txn.match_anchor(user_message) != n:
         return False
+    if turn == n:
+        return True
     if normalise_anchor(prev_user_anchor or ""):
-        return n > 1 and await txn.match_anchor(prev_user_anchor) == n - 1
-    if n == 1 or turn == n:
+        if n < 2:
+            return False
+        matched = await txn.match_anchor(prev_user_anchor)
+        if matched == n - 1:
+            return True
+        before = slots.get(thread_id, SlotKey(n - 1, "user"))
+        return matched is None and before is not None and before.fidelity == Fidelity.STUB
+    if n == 1:
         return True
     reply = slots.get(thread_id, SlotKey(n, "assistant"))
     return reply is None or reply.fidelity in (Fidelity.OPEN, Fidelity.STUB)
 
 
+def reply_shape(reply: str) -> str:
+    """P1-15: `markdown`, `plain` or `flattened` (long text on one line)."""
+    text = reply.strip()
+    if "\n" not in text and (
+        len(text) > _FLATTENED_MIN_CHARS
+        or (len(text) > _INLINE_LIST_MIN_CHARS and _INLINE_LIST_RE.search(text))
+    ):
+        return "flattened"
+    return "markdown" if _MARKDOWN_LINE_RE.search(text) else "plain"
+
+
 def classify_reply(reply: str) -> Fidelity:
-    """B7 E-truth: a reply sent back by the model is never stored as verbatim."""
-    if "[REDACTED]" in reply or _SUMMARY_LINE_RE.search(reply):
+    """B7 E-truth: a reply sent back by the model is never stored as verbatim.
+
+    Redacted text, bracketed descriptions (P1-12) and flattened retellings
+    (P1-15) are stored as `abridged`.
+    """
+    if "[REDACTED]" in reply or _SUMMARY_LINE_RE.search(reply) or reply_shape(reply) == "flattened":
         return Fidelity.ABRIDGED
     return Fidelity.REPORTED
 
@@ -566,10 +638,19 @@ class TurnService:
                 if turn is not None and highest + 1 < turn <= highest + 1 + _MAX_NOT_LOGGED_PER_CALL:
                     gap_ns = list(range(highest + 1, turn))
                     n = turn
+                # E8-3: a skipped call leaves `turn` at the expected number, but the
+                # previous-message anchor names a message that was never stored
+                if not gap_ns and await _skipped_turn(txn, highest, prev_user_anchor):
+                    gap_ns = [highest + 1]
+                    n = highest + 2
 
                 if gap_ns:
                     await txn.record_gaps(gap_ns)
-                    await txn.write_stubs([Stub(n=g, anchor="") for g in gap_ns])
+                    # The last skipped message is known by its opening words
+                    await txn.write_stubs([
+                        Stub(n=g, anchor=normalise_anchor(prev_user_anchor or "") if g == n - 1 else "")
+                        for g in gap_ns
+                    ])
 
                 await txn.upsert_turn(
                     n=n,
@@ -604,7 +685,10 @@ class TurnService:
             "binding": binding,
             "action": action,
             "not_logged": gap_ns,
+            # E8: call 1 of a reply (full capture, no reply yet) gets back its turn
+            "awaiting_reply": reply is None and self._config.capture == CaptureMode.FULL,
             "reply_fidelity": reply_fidelity.value if reply_fidelity else None,
+            "reply_shape": reply_shape(reply) if reply is not None else None,
             "bytes": len((user_stored or "").encode("utf-8"))
             + len((reply_stored or "").encode("utf-8")),
         }

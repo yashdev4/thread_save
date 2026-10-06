@@ -17,7 +17,7 @@ import logging
 import logging.handlers
 import sys
 import traceback
-from typing import Any
+from typing import Annotated, Any
 
 # ── §7.3 stdio hygiene — BEFORE any other import ──────────────────────────
 _real_stdout = sys.stdout
@@ -33,11 +33,14 @@ logger = logging.getLogger("thread_save")
 # ── Now safe to import ────────────────────────────────────────────────────
 
 
+from pydantic import Field
+
 from thread_save.config import (
     VaultConfig,
     legacy_save_turn_enabled,
     load_capture_mode,
     load_config,
+    load_reply_max_chars,
 )
 from thread_save.index.sqlite_index import ThreadIndex
 from thread_save.models import Fidelity
@@ -51,6 +54,7 @@ from thread_save.tools.descriptions import (
     BACKFILL_DESC,
     DEST_LOCAL,
     LOCAL_TOOL_NAMES,
+    REPLY_FIELD_DESC,
     log_turn_description,
     public_result,
     server_instructions,
@@ -141,8 +145,9 @@ def _error_result(code: str, retryable: bool = False) -> dict:
 
 # ── MCP Server ─────────────────────────────────────────────────────────────
 
-# B7 — Server instructions (echo-free, real destination)
-_SERVER_INSTRUCTIONS = server_instructions(DEST_LOCAL, LOCAL_TOOL_NAMES["log_turn"])
+# B7 — Server instructions (echo-free, real destination; E8 two calls per reply)
+_CAPTURE = load_capture_mode()
+_SERVER_INSTRUCTIONS = server_instructions(DEST_LOCAL, LOCAL_TOOL_NAMES["log_turn"], _CAPTURE)
 
 mcp = ArchiveServer(
     "threadvault",
@@ -154,8 +159,7 @@ mcp = ArchiveServer(
 
 # ── Tool 1: vault_log_turn (B7 path E) ────────────────────────────────────
 
-_CAPTURE = load_capture_mode()
-_LOG_TURN_DESC = log_turn_description(DEST_LOCAL, _CAPTURE)
+_LOG_TURN_DESC = log_turn_description(DEST_LOCAL, _CAPTURE, load_reply_max_chars())
 
 _log_turn_kwargs: dict = {"description": _LOG_TURN_DESC}
 if _HAS_ANNOTATIONS:
@@ -206,12 +210,13 @@ async def _log_turn(
             binding=result.get("binding", "paused" if result.get("paused") else "unknown"),
             gap_size=len(result.get("not_logged") or []),
             fidelity=result.get("reply_fidelity") or "none",
+            reply_shape=result.get("reply_shape") or "none",
             content_bytes=result.get("bytes", 0),
             latency_ms=timer.elapsed_ms,
             ok=result.get("ok", True),
             action=result.get("action", ""),
         )
-        return public_result(result)
+        return public_result(result, LOCAL_TOOL_NAMES["log_turn"])
 
     except Exception:
         logger.error("vault_log_turn failed: %s", traceback.format_exc())
@@ -221,7 +226,7 @@ async def _log_turn(
 
 async def vault_log_turn(
     user_message: str,
-    reply: str | None = None,
+    reply: Annotated[str | None, Field(description=REPLY_FIELD_DESC)] = None,
     thread_id: str | None = None,
     turn: int | None = None,
     prev_user_anchor: str | None = None,

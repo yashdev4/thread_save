@@ -12,7 +12,9 @@ Ensures tool list, descriptions, annotations, and server instructions match stdi
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
+
+from pydantic import Field
 
 from thread_save.config import CaptureMode, legacy_save_turn_enabled
 from thread_save.models import Fidelity
@@ -23,6 +25,7 @@ from thread_save.tools.descriptions import (
     BACKFILL_DESC,
     DEST_REMOTE,
     REMOTE_TOOL_NAMES,
+    REPLY_FIELD_DESC,
     log_turn_description,
     public_result,
     server_instructions,
@@ -44,8 +47,12 @@ except ImportError:
 _SERVER_INSTRUCTIONS = server_instructions(DEST_REMOTE, REMOTE_TOOL_NAMES["log_turn"])
 
 
-def _log_turn_desc(capture: CaptureMode) -> str:
-    return log_turn_description(DEST_REMOTE, capture)
+def _server_instructions(capture: CaptureMode) -> str:
+    return server_instructions(DEST_REMOTE, REMOTE_TOOL_NAMES["log_turn"], capture)
+
+
+def _log_turn_desc(capture: CaptureMode, reply_max_chars: int = 8_000) -> str:
+    return log_turn_description(DEST_REMOTE, capture, reply_max_chars)
 
 
 _LOG_TURN_DESC = _log_turn_desc(CaptureMode.FULL)
@@ -85,16 +92,17 @@ Reports turn counts by fidelity, gap status, and coverage percentage."""
 
 def create_http_mcp_server(service: TurnService) -> ArchiveServer:
     """Create and configure MCPServer for HTTP transport with full stdio tool parity."""
+    capture = getattr(getattr(service, "_config", None), "capture", CaptureMode.FULL)
     server = ArchiveServer(
         "threadvault-remote",
         write_tools={REMOTE_TOOL_NAMES[k] for k in ("log_turn", "save_turn", "backfill")},
         version="0.2.0",
-        instructions=_SERVER_INSTRUCTIONS,
+        instructions=_server_instructions(capture),
     )
 
-    # 1. vault_log_turn (B7 path E)
-    capture = getattr(getattr(service, "_config", None), "capture", CaptureMode.FULL)
-    log_kwargs: dict = {"name": "vault_log_turn", "description": _log_turn_desc(capture)}
+    # 1. vault_log_turn (B7 path E, E8 two calls per reply)
+    reply_max = getattr(getattr(service, "_config", None), "reply_max_chars", 8_000)
+    log_kwargs: dict = {"name": "vault_log_turn", "description": _log_turn_desc(capture, reply_max)}
     if _HAS_ANNOTATIONS:
         log_kwargs["annotations"] = ToolAnnotations(
             readOnlyHint=False,
@@ -123,14 +131,20 @@ def create_http_mcp_server(service: TurnService) -> ArchiveServer:
                 account=account,
                 client="remote",
             )
-            return public_result(result)
+            # P1-15 measurement: is the logged reply formatted or a flattened retelling?
+            logger.info(
+                "vault_log_turn n=%s action=%s reply_fidelity=%s reply_shape=%s",
+                result.get("n"), result.get("action"),
+                result.get("reply_fidelity"), result.get("reply_shape"),
+            )
+            return public_result(result, REMOTE_TOOL_NAMES["log_turn"])
         except Exception as e:
             logger.error("vault_log_turn error: %s", e)
             return {"ok": False, "code": "server_error", "retryable": True}
 
     async def vault_log_turn(
         user_message: str,
-        reply: str | None = None,
+        reply: Annotated[str | None, Field(description=REPLY_FIELD_DESC)] = None,
         thread_id: str | None = None,
         turn: int | None = None,
         prev_user_anchor: str | None = None,

@@ -69,6 +69,10 @@ class ThreadTxn(Protocol):
         """Highest n whose user anchor equals normalise_anchor(text), or None."""
         ...
 
+    async def user_anchor(self, n: int) -> Optional[str]:
+        """Stored anchor of user turn n ("" for a stub), or None if there is no such turn."""
+        ...
+
     async def write_stubs(self, stubs: list[Stub]) -> None:
         ...
 

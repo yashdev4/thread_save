@@ -50,10 +50,10 @@ _COLLECT = textwrap.dedent('''
         from thread_save.config import load_config
         from thread_save.service import TurnService
         from thread_save.storage.writer import FileStore
-        from thread_save.web.mcp_server import create_http_mcp_server, _SERVER_INSTRUCTIONS
+        from thread_save.web.mcp_server import create_http_mcp_server, _server_instructions
         cfg = load_config()
         server = create_http_mcp_server(TurnService(FileStore(cfg), config=cfg))
-        instructions = _SERVER_INSTRUCTIONS
+        instructions = _server_instructions(cfg.capture)
     async def main():
         tools = []
         for t in await server.list_tools():
@@ -112,6 +112,18 @@ def test_tool_set_and_schema_shape(transport, capture):
 
 
 @pytest.mark.parametrize("transport", ["stdio", "http"])
+def test_reply_field_asks_for_the_formatted_reply(transport):
+    """P1-15: the field the model fills says what to put in it, on both transports."""
+    surface = _surface(transport, "full")
+    tool = next(t for t in surface["tools"] if t["name"] == NAMES[transport]["log_turn"])
+    field = tool["schema"]["properties"]["reply"].get("description", "")
+    for text in (field, tool["description"]):
+        assert "full reply" in text and "Markdown" in text and "Not a summary" in text
+    assert "shortens" not in tool["description"]
+    assert "8,000 characters" in tool["description"]
+
+
+@pytest.mark.parametrize("transport", ["stdio", "http"])
 def test_destination_is_stated_truthfully(transport):
     surface = _surface(transport, "full")
     log_name = NAMES[transport]["log_turn"]
@@ -124,6 +136,25 @@ def test_destination_is_stated_truthfully(transport):
         else:
             assert "ThreadVault account" in text
             assert "on this computer" not in text
+
+
+@pytest.mark.parametrize("transport,capture", CASES)
+def test_call_at_the_start_of_each_reply(transport, capture):
+    """B7 E8 (P1-16): the call is asked for at the start of the reply, where models
+    make it reliably. In full capture a second call after the reply adds the reply."""
+    surface = _surface(transport, capture)
+    log_name = NAMES[transport]["log_turn"]
+    desc = next(t["description"] for t in surface["tools"] if t["name"] == log_name)
+    instr = surface["instructions"]
+    assert f"At the start of each reply, call {log_name} with the user's message." in instr
+    assert desc.startswith("Call at the start of each reply")
+    if capture == "full":
+        assert "call it again with the reply" in instr
+        assert "Each reply has two calls" in desc and "turn returned by call 1" in desc
+    else:
+        assert "again" not in instr and "again" not in desc
+        assert "reply (call 2" not in desc
+    assert "after finishing each reply" not in (instr + desc).lower()
 
 
 def test_legacy_tool_is_listed_only_when_enabled():

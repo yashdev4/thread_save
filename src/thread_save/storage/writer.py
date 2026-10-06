@@ -179,6 +179,11 @@ class FileThreadTxn:
         matches = [m for m, a in self._entry.anchor_map.items() if a == norm]
         return max(matches) if matches else None
 
+    async def user_anchor(self, n: int) -> Optional[str]:
+        if not self._entry:
+            return None
+        return self._entry.anchor_map.get(n)
+
     async def upsert_turn(
         self,
         n: int,

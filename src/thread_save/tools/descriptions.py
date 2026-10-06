@@ -4,6 +4,9 @@ Rules enforced by tests/test_echo_free_protocol.py:
 - the model is never asked for earlier output of its own (no previous replies,
   no whole-chat resends, no chunking to avoid shortening);
 - the reply is sent once, right after it is written, and only in `full` capture;
+- each reply starts with a call carrying the user's message only (B7 E8: the call
+  at the start of a reply is the one models make reliably), and in `full` capture
+  a second call after the reply adds the reply to the same turn;
 - each transport states its real destination (B1 §6.1).
 """
 
@@ -36,40 +39,74 @@ REMOTE_TOOL_NAMES = {
 _PUBLIC_RESULT_KEYS = ("ok", "thread_id", "next_turn", "paused", "tombstoned", "code", "retryable")
 
 
-def server_instructions(destination: str, log_tool: str = "vault_log_turn") -> str:
+def server_instructions(
+    destination: str, log_tool: str = "vault_log_turn", capture: CaptureMode = CaptureMode.FULL
+) -> str:
+    if capture == CaptureMode.USER_ONLY:
+        when = f"At the start of each reply, call {log_tool} with the user's message. "
+    else:
+        when = (
+            f"At the start of each reply, call {log_tool} with the user's message. "
+            "After the reply is written, call it again with the reply and the turn number "
+            "the first call returned. "
+        )
     return (
         f"ThreadVault keeps an archive of this user's conversations {destination}, which they "
-        f"turned on deliberately. After finishing each reply, call {log_tool} as described "
-        "in its tool description. If the user asks not to archive a conversation, stop calling "
-        "it for that conversation. Coding-agent sessions such as Claude Code are not archived, "
-        "so the tool is not offered there."
+        f"turned on deliberately. {when}"
+        "If the user asks not to archive a conversation, stop calling it for that conversation. "
+        "Coding-agent sessions such as Claude Code are not archived, so the tool is not offered there."
     )
 
 
-def log_turn_description(destination: str, capture: CaptureMode) -> str:
+# P1-15: the reply field carries its own schema description, so the request for
+# the full Markdown reply sits on the field the model fills, not only in prose.
+REPLY_FIELD_DESC = (
+    "Your full reply from this turn as Markdown, with the same headings, lists, tables, "
+    "code blocks and line breaks the user sees. Not a summary or a description of it."
+)
+
+
+def log_turn_description(destination: str, capture: CaptureMode, reply_max_chars: int = 8_000) -> str:
     if capture == CaptureMode.USER_ONLY:
-        record = "a record of their messages"
-        reply_line = ""
+        text = (
+            "Call at the start of each reply to archive the user's message in this chat. "
+            f"The user turned this connector on to keep a record of their messages {destination}.\n"
+            "\n"
+            "Call this once per reply, at the start, before writing anything:\n"
+            "- user_message: the user's latest message, as written.\n"
+            "- thread_id: the thread_id from the last result. Omit on the first turn.\n"
+            "- turn: next_turn from the last result. Omit on the first turn of a new chat; if the "
+            "chat already has earlier messages, send this message's number (the count of the user's messages so far, this one included).\n"
+            "- prev_user_anchor: the first 80 characters of the user's previous message. "
+            "Omit on the first turn.\n"
+            "- title_hint: a short descriptive title, first turn only.\n"
+            "\n"
+            "If a message contains passwords, API keys or similar secrets, replace them with [REDACTED].\n"
+        )
     else:
-        record = "a record of their chats"
-        reply_line = "- reply: the reply you just gave in this turn, as shown to the user.\n"
-    text = (
-        "Call after finishing each reply to archive this chat turn for the user. "
-        f"The user turned this connector on to keep {record} {destination}.\n"
-        "\n"
-        "Call this once per reply, as the last step, after the reply is written:\n"
-        "- user_message: the user's latest message, as written.\n"
-        f"{reply_line}"
-        "- thread_id: the thread_id from the last result. Omit on the first turn.\n"
-        "- turn: next_turn from the last result. Omit on the first turn.\n"
-        "- prev_user_anchor: the first 80 characters of the user's previous message. "
-        "Omit on the first turn.\n"
-        "- title_hint: a short descriptive title, first turn only.\n"
-        "\n"
-        "If a message contains passwords, API keys or similar secrets, replace them with [REDACTED].\n"
-    )
-    if capture != CaptureMode.USER_ONLY:
-        text += "The server shortens long replies, so send the reply once as it is.\n"
+        text = (
+            "Call at the start of each reply and again after it to archive this chat turn. "
+            f"The user turned this connector on to keep a record of their chats {destination}.\n"
+            "\n"
+            "Each reply has two calls:\n"
+            "1. At the start, before writing anything: user_message, thread_id, turn, "
+            "prev_user_anchor (title_hint on the first turn). No reply.\n"
+            "2. As the last step, after the reply is written: the same fields, with turn set to "
+            "the turn returned by call 1, plus reply.\n"
+            "\n"
+            "- user_message: the user's latest message, as written.\n"
+            f"- reply (call 2 only): {REPLY_FIELD_DESC[0].lower()}{REPLY_FIELD_DESC[1:]}\n"
+            "- thread_id: the thread_id from the last result. Omit on the first turn.\n"
+            "- turn: call 1 sends next_turn from the last result; call 2 sends the turn from "
+            "call 1's result. Omit on the first turn of a new chat; if the chat already has "
+            "earlier messages, send this message's number (the count of the user's messages so far, this one included).\n"
+            "- prev_user_anchor: the first 80 characters of the user's previous message. "
+            "Omit on the first turn.\n"
+            "- title_hint: a short descriptive title, first turn only.\n"
+            "\n"
+            "If a message contains passwords, API keys or similar secrets, replace them with [REDACTED].\n"
+            f"Send the whole reply once; the server keeps up to {reply_max_chars:,} characters.\n"
+        )
     text += (
         "If the user asks not to archive this conversation, stop calling this tool for the rest of it.\n"
         "Repeated calls are safe and never create duplicate entries."
@@ -84,9 +121,20 @@ BACKFILL_DESC = (
 )
 
 
-def public_result(result: dict) -> dict:
-    """The part of a log_turn result that is returned to the model."""
-    return {k: result[k] for k in _PUBLIC_RESULT_KEYS if k in result}
+def public_result(result: dict, log_tool: str = "vault_log_turn") -> dict:
+    """The part of a log_turn result that is returned to the model.
+
+    Call 1 of a reply gets back its turn and the next step (B7 E8-2), so the
+    reminder for call 2 sits in the conversation right before the reply is
+    written. Call 2, and every call in user_only capture, gets next_turn.
+    """
+    public = {k: result[k] for k in _PUBLIC_RESULT_KEYS if k in result}
+    if result.get("awaiting_reply") and result.get("ok") and "n" in result:
+        n = result["n"]
+        public.pop("next_turn", None)
+        public["turn"] = n
+        public["then"] = f"After your reply, call {log_tool} with turn={n} and reply."
+    return public
 
 
 def user_messages_only(turns: list[dict]) -> list[dict]:

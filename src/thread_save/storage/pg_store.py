@@ -154,6 +154,16 @@ class PgThreadTxn:
         )
         return row
 
+    async def user_anchor(self, n: int) -> Optional[str]:
+        if not self._conn or self._is_tombstoned:
+            return None
+        row = await self._conn.fetchrow(
+            "SELECT anchor FROM turns WHERE thread_id = $1 AND n = $2 AND role = 'user'",
+            self._thread_id,
+            n,
+        )
+        return None if row is None else (row["anchor"] or "")
+
     async def upsert_turn(
         self,
         n: int,

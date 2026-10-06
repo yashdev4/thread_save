@@ -85,8 +85,8 @@ On your first conversation turn, Claude will request permission to use the tools
 In Claude's **Settings → Preferences** (Personal Preferences), paste the following directive:
 ```text
 I use the ThreadVault connector to archive my chats. When it's available, call
-its log-turn tool (vault_log_turn, or vault_local_log_turn for the local server) once after
-finishing each reply, as its description explains. If I say
+its log-turn tool (vault_log_turn, or vault_local_log_turn for the local server) at the start
+of each reply with my message, and again after the reply with your reply, as its description explains. If I say
 "don't save this chat", skip it for that conversation.
 ```
 This preference syncs across all devices and instructs Claude to log turns routinely.

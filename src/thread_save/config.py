@@ -153,6 +153,12 @@ def load_capture_mode() -> CaptureMode:
         return CaptureMode.FULL
 
 
+def load_reply_max_chars(default: int = 8_000) -> int:
+    """THREADVAULT_REPLY_MAX_CHARS: how much of a logged reply is kept (B7 E-budget)."""
+    raw = os.environ.get("THREADVAULT_REPLY_MAX_CHARS", "").strip()
+    return max(1, int(raw)) if raw else default
+
+
 def legacy_save_turn_enabled() -> bool:
     """THREADVAULT_LEGACY_SAVE_TURN=on re-lists the old echo-based vault_save_turn tool (B7 E-retire)."""
     return os.environ.get("THREADVAULT_LEGACY_SAVE_TURN", "").strip().lower() in ("on", "true", "1", "yes")
@@ -204,8 +210,8 @@ def load_config() -> VaultConfig:
 
     kwargs["capture"] = load_capture_mode()
 
-    if reply_max := os.environ.get("THREADVAULT_REPLY_MAX_CHARS"):
-        kwargs["reply_max_chars"] = max(1, int(reply_max))
+    if os.environ.get("THREADVAULT_REPLY_MAX_CHARS", "").strip():
+        kwargs["reply_max_chars"] = load_reply_max_chars()
 
     jwt_secret_val = os.environ.get("THREADVAULT_JWT_SECRET") or os.environ.get("JWT_SECRET_KEY")
     is_prod = bool(

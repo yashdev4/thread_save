@@ -134,7 +134,8 @@ def test_d1_tool_description_openings_under_80_chars():
                 f"{name} first sentence must contain 'every reply': '{first_sentence}'"
             )
         if "vault_log_turn" in name:
-            assert "after finishing each reply" in first_sentence, (
+            # B7 E8: asked for at the start of each reply, where it is made reliably
+            assert "at the start of each reply" in first_sentence, (
                 f"{name} first sentence must say when to call: '{first_sentence}'"
             )
 
