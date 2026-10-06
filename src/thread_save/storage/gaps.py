@@ -99,6 +99,12 @@ class GapTracker:
         if n in gaps:
             gaps[n].state = GapState.RECOVERED
 
+    def mark_requested(self, thread_id: str, n: int) -> None:
+        """Mark a gap as already handled so it is never reported (restore, not_logged)."""
+        gaps = self._get_gaps(thread_id)
+        if n in gaps:
+            gaps[n].requested = True
+
     def mark_lost(self, thread_id: str, n: int) -> None:
         """Explicitly mark a gap as lost."""
         gaps = self._get_gaps(thread_id)

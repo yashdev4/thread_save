@@ -109,7 +109,7 @@ async def test_cross_surface_http_transport(clean_pg_store, service_and_app):
                         "jsonrpc": "2.0",
                         "id": 10,
                         "method": "tools/call",
-                        "params": {"name": "vault_save_turn", "arguments": arguments},
+                        "params": {"name": "vault_log_turn", "arguments": arguments},
                     },
                     headers=headers,
                 )
@@ -122,28 +122,32 @@ async def test_cross_surface_http_transport(clean_pg_store, service_and_app):
 
             # Step 1: Started on Desktop
             r1 = await call_save({
-                "user_query": "Architecture planning started on Desktop.",
+                "user_message": "Architecture planning started on Desktop.",
+                "reply": "Understood. Desktop turn 1 stored.",
                 "title_hint": "Multi Device Sync Thread",
             })
             assert r1["ok"] is True
             thread_id = r1["thread_id"]
+            assert r1["next_turn"] == 2
 
             # Step 2: Continued on Desktop
             r2 = await call_save({
                 "thread_id": thread_id,
+                "turn": r1["next_turn"],
                 "prev_user_anchor": "Architecture planning started on Desktop.",
-                "prev_response": "Understood. Desktop turn 1 stored.",
-                "user_query": "Desktop turn 2 details.",
+                "user_message": "Desktop turn 2 details.",
+                "reply": "Desktop turn 2 stored. Ready for Android.",
             })
             assert r2["ok"] is True
             assert r2["thread_id"] == thread_id
 
-            # Step 3: Continued on Android (same thread_id & anchor)
+            # Step 3: Continued on Android (same thread_id & turn counter)
             r3 = await call_save({
                 "thread_id": thread_id,
+                "turn": r2["next_turn"],
                 "prev_user_anchor": "Desktop turn 2 details.",
-                "prev_response": "Desktop turn 2 stored. Ready for Android.",
-                "user_query": "Now continuing on Android seamlessly.",
+                "user_message": "Now continuing on Android seamlessly.",
+                "reply": "Android turn stored. Ready for Web.",
             })
             assert r3["ok"] is True
             assert r3["thread_id"] == thread_id
@@ -151,16 +155,19 @@ async def test_cross_surface_http_transport(clean_pg_store, service_and_app):
             # Step 4: Continued on Web
             r4 = await call_save({
                 "thread_id": thread_id,
+                "turn": r3["next_turn"],
                 "prev_user_anchor": "Now continuing on Android seamlessly.",
-                "prev_response": "Android turn stored. Ready for Web.",
-                "user_query": "Finally checking on Claude Web.",
+                "user_message": "Finally checking on Claude Web.",
+                "reply": "Web turn stored.",
             })
             assert r4["ok"] is True
             assert r4["thread_id"] == thread_id
+            assert r4["next_turn"] == 5
 
             # Verify stats in Postgres
             stats = await clean_pg_store.stats("cross-surface-http-user", thread_id)
-            assert stats.total_turns == 7  # 4 user turns + 3 assistant turns
+            assert stats.total_turns == 8  # 4 complete turns, both sides, no open slot
+            assert stats.reported == 4
             assert stats.stubs == 0
             coverage_pct = (
                 ((stats.total_turns - stats.stubs) / stats.total_turns * 100.0)

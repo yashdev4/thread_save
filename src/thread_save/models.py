@@ -24,8 +24,9 @@ class Fidelity(str, Enum):
     OPEN = "open"           # rank 0 — placeholder for the final unclosed reply
     STUB = "stub"           # rank 1 — missed turn, body is a marker
     TRUNCATED = "truncated" # rank 2 — chunk assembly timed out or server-side truncation (§3.2, §3.4)
-    ABRIDGED = "abridged"   # rank 3 — model self-declared shortening
-    VERBATIM = "verbatim"   # rank 4 — full content
+    ABRIDGED = "abridged"   # rank 3 — model self-declared shortening, or a summary the server detected
+    REPORTED = "reported"   # rank 4 — reply text as sent back by the model; cannot be checked as verbatim (B7 E-truth)
+    VERBATIM = "verbatim"   # rank 5 — full content
 
     @property
     def rank(self) -> int:
@@ -37,7 +38,8 @@ _FIDELITY_RANKS: dict[Fidelity, int] = {
     Fidelity.STUB: 1,
     Fidelity.TRUNCATED: 2,
     Fidelity.ABRIDGED: 3,
-    Fidelity.VERBATIM: 4,
+    Fidelity.REPORTED: 4,
+    Fidelity.VERBATIM: 5,
 }
 
 # §3.4 Server-side size limit per body: 100,000 characters

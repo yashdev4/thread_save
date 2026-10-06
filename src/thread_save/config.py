@@ -15,12 +15,19 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Optional
 
 
 class VaultMode(str, Enum):
     """§6.3 — Controls when the model is expected to call vault_save_turn."""
     TURN_START = "turn_start"   # Once at the start of each reply (default)
     BOTH = "both"               # Start + wrap-up (safe due to upsert)
+
+
+class CaptureMode(str, Enum):
+    """B7 E-floor — what vault_log_turn accepts from the model."""
+    FULL = "full"            # user message + the reply just written (capped)
+    USER_ONLY = "user_only"  # user message only; the reply field is not in the tool schema
 
 
 class NudgeMode(str, Enum):
@@ -59,6 +66,10 @@ class VaultConfig:
     # Invocation reliability (§6.3, §6.4)
     mode: VaultMode = VaultMode.TURN_START
     nudge: NudgeMode = NudgeMode.OFF
+
+    # Echo-free capture (B7 E-floor, E-budget)
+    capture: CaptureMode = CaptureMode.FULL
+    reply_max_chars: int = 8_000
 
     # Gap limits (§I-6)
     max_missing_reported: int = 10
@@ -133,6 +144,20 @@ class VaultConfig:
         return self.pause_file.exists()
 
 
+def load_capture_mode() -> CaptureMode:
+    """THREADVAULT_CAPTURE = full | user_only (B7 E-floor). Unknown values fall back to full."""
+    raw = os.environ.get("THREADVAULT_CAPTURE", CaptureMode.FULL.value).strip().lower()
+    try:
+        return CaptureMode(raw)
+    except ValueError:
+        return CaptureMode.FULL
+
+
+def legacy_save_turn_enabled() -> bool:
+    """THREADVAULT_LEGACY_SAVE_TURN=on re-lists the old echo-based vault_save_turn tool (B7 E-retire)."""
+    return os.environ.get("THREADVAULT_LEGACY_SAVE_TURN", "").strip().lower() in ("on", "true", "1", "yes")
+
+
 def load_config() -> VaultConfig:
     """Load configuration from environment variables.
 
@@ -145,6 +170,8 @@ def load_config() -> VaultConfig:
         THREAD_SAVE_REDACTION       — Enable/disable redaction
         THREADVAULT_MODE            — turn_start | both
         THREADVAULT_NUDGE           — off | on
+        THREADVAULT_CAPTURE         — full | user_only
+        THREADVAULT_REPLY_MAX_CHARS — cap on a logged reply (default 8000)
     """
     vault_root_str = os.environ.get(
         "THREAD_SAVE_VAULT_ROOT",
@@ -174,6 +201,11 @@ def load_config() -> VaultConfig:
 
     if nudge_str := os.environ.get("THREADVAULT_NUDGE"):
         kwargs["nudge"] = NudgeMode(nudge_str.lower())
+
+    kwargs["capture"] = load_capture_mode()
+
+    if reply_max := os.environ.get("THREADVAULT_REPLY_MAX_CHARS"):
+        kwargs["reply_max_chars"] = max(1, int(reply_max))
 
     jwt_secret_val = os.environ.get("THREADVAULT_JWT_SECRET") or os.environ.get("JWT_SECRET_KEY")
     is_prod = bool(

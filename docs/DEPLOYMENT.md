@@ -108,7 +108,11 @@ Every environment variable and secret required or supported for deployment:
 | `THREADVAULT_ENVELOPE_KEY` | Secret | `""` | Optional | 32-byte hex-encoded Master Key for AES-256-GCM envelope encryption at rest. |
 | `THREADVAULT_VIEWER_TTL_SECONDS` | Config | `900` (15 min) | Optional | Time-to-live in seconds for viewer URLs and download links. |
 | `THREADVAULT_OFFLOAD_AFTER_DAYS` | Config | `14` | Optional | Days of inactivity before local cold threads are eligible for GitHub offload. |
-| `THREADVAULT_MODE` | Config | `turn_start` | Optional | Reliability protocol mode: `turn_start` (default) or `both`. |
+| `THREADVAULT_MODE` | Config | `turn_start` | Optional | Legacy `vault_save_turn` only: `turn_start` (default) or `both`. |
+| `THREADVAULT_CAPTURE` | Config | `full` | Optional | `full`: `vault_log_turn` stores the user message and the reply just written. `user_only`: the `reply` field is removed from the tool schema (B7 E-floor). |
+| `THREADVAULT_REPLY_MAX_CHARS` | Config | `8000` | Optional | Cap on a logged reply; longer replies are stored as a prefix marked `truncated` (B7 E-budget). |
+| `THREADVAULT_SKIP_CLIENTS` | Config | `claude-code` | Optional | Comma-separated client names/User-Agent substrings that are **not archived** (write tools hidden, forced calls are no-ops). `none` archives every client. Each skipped `tools/list` is logged as `tools/list for client <name/version>: write tools withheld`. |
+| `THREADVAULT_LEGACY_SAVE_TURN` | Config | off | Optional | `on` re-lists the old echo-based `vault_save_turn` tool. Fallback only; it carries the wording that tripped the model safeguard (P1-11). |
 | `THREADVAULT_NUDGE` | Config | `off` | Optional | Prompt nudge mode: `off` (default) or `on`. |
 | `PORT` | Config | `8000` | Optional | HTTP port for Uvicorn web server. |
 | `THREADVAULT_GH_SETTLE_MINUTES` | Config | `30` | Optional | Inactivity window (in minutes) before a thread is considered settled for GitHub export. Setting to `1` is strictly for integration testing. |

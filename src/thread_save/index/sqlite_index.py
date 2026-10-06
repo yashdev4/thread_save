@@ -157,19 +157,27 @@ class ThreadIndex:
         try:
             conn = self._ensure_db()
             if query:
-                # Search in FTS5 then join with threads table
-                rows = conn.execute(
+                # Search in FTS5 then join with threads table. Every turn row also
+                # carries the title, so keep only the best-ranked hit per thread.
+                hits = conn.execute(
                     """
-                    SELECT DISTINCT t.thread_id, t.title, t.path, t.updated,
+                    SELECT t.thread_id, t.title, t.path, t.updated,
                            snippet(turns_fts, 3, '<mark>', '</mark>', '...', 32)
                     FROM turns_fts f
                     JOIN threads t ON t.thread_id = f.thread_id
                     WHERE turns_fts MATCH ?
-                    ORDER BY t.updated DESC
+                    ORDER BY t.updated DESC, f.rank
                     LIMIT ?
                     """,
-                    (query, limit),
+                    (query, limit * 50),
                 ).fetchall()
+                seen: set[str] = set()
+                rows = []
+                for r in hits:
+                    if r[0] not in seen:
+                        seen.add(r[0])
+                        rows.append(r)
+                rows = rows[:limit]
             else:
                 rows = conn.execute(
                     """

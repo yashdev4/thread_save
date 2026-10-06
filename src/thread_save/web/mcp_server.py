@@ -1,7 +1,7 @@
 """HTTP Remote MCPServer setup with tool parity and stdio alignment (§2 S8, §4.1, Milestone H4).
 
 Exposes all ThreadVault MCP tools over Streamable HTTP transport:
-- vault_save_turn
+- vault_log_turn (B7; vault_save_turn only with THREADVAULT_LEGACY_SAVE_TURN=on)
 - vault_backfill
 - vault_find
 - vault_stats
@@ -12,12 +12,22 @@ Ensures tool list, descriptions, annotations, and server instructions match stdi
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
-from mcp.server.mcpserver import MCPServer
+from thread_save.config import CaptureMode, legacy_save_turn_enabled
 from thread_save.models import Fidelity
 from thread_save.service import TurnService
 from thread_save.storage.formatter import extract_snippet
+from thread_save.tools.clients import ArchiveServer
+from thread_save.tools.descriptions import (
+    BACKFILL_DESC,
+    DEST_REMOTE,
+    REMOTE_TOOL_NAMES,
+    log_turn_description,
+    public_result,
+    server_instructions,
+    user_messages_only,
+)
 from thread_save.web.context import current_account_id
 from thread_save.web.viewer import create_viewer_token
 
@@ -30,12 +40,17 @@ try:
 except ImportError:
     _HAS_ANNOTATIONS = False
 
-# Server instructions (matching stdio server.py §6.2)
-_SERVER_INSTRUCTIONS = """\
-ThreadVault keeps a local markdown archive of this user's conversations, which they turned on \
-deliberately. At the start of each reply, call vault_save_turn as described in its tool \
-description. If the user asks not to archive a conversation, stop calling it for that conversation."""
+# B7 — Server instructions (echo-free, real destination: the server, not this computer)
+_SERVER_INSTRUCTIONS = server_instructions(DEST_REMOTE, REMOTE_TOOL_NAMES["log_turn"])
 
+
+def _log_turn_desc(capture: CaptureMode) -> str:
+    return log_turn_description(DEST_REMOTE, capture)
+
+
+_LOG_TURN_DESC = _log_turn_desc(CaptureMode.FULL)
+
+# Legacy (B1 §6.2); listed only with THREADVAULT_LEGACY_SAVE_TURN=on
 _SAVE_TURN_DESC = """\
 Call at the start of every reply to archive this chat turn for the user. \
 The user enabled this connector to keep a record of their chats in their ThreadVault account.
@@ -57,10 +72,7 @@ If the user asks you to save the whole chat, send all turns still in the convers
 If the user asks not to archive this conversation, stop calling this tool for the rest of it.
 Repeated or duplicate calls are safe and never create duplicate entries."""
 
-_BACKFILL_DESC = """\
-Send earlier chat turns that vault_save_turn reported as missing. \
-Can also send the whole conversation when the user asks to save it. Up to 10 turns per call; send more in further \
-calls. Turns already archived are left unchanged, so resending is safe."""
+_BACKFILL_DESC = BACKFILL_DESC
 
 _FIND_DESC = """\
 Search saved ThreadVault threads by keyword or list recent threads. Returns metadata \
@@ -71,15 +83,77 @@ Get coverage statistics for a ThreadVault thread. \
 Reports turn counts by fidelity, gap status, and coverage percentage."""
 
 
-def create_http_mcp_server(service: TurnService) -> MCPServer:
+def create_http_mcp_server(service: TurnService) -> ArchiveServer:
     """Create and configure MCPServer for HTTP transport with full stdio tool parity."""
-    server = MCPServer(
+    server = ArchiveServer(
         "threadvault-remote",
+        write_tools={REMOTE_TOOL_NAMES[k] for k in ("log_turn", "save_turn", "backfill")},
         version="0.2.0",
         instructions=_SERVER_INSTRUCTIONS,
     )
 
-    # 1. vault_save_turn
+    # 1. vault_log_turn (B7 path E)
+    capture = getattr(getattr(service, "_config", None), "capture", CaptureMode.FULL)
+    log_kwargs: dict = {"name": "vault_log_turn", "description": _log_turn_desc(capture)}
+    if _HAS_ANNOTATIONS:
+        log_kwargs["annotations"] = ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        )
+
+    async def _log_turn(
+        user_message: str,
+        reply: str | None,
+        thread_id: str | None,
+        turn: int | None,
+        prev_user_anchor: str | None,
+        title_hint: str | None,
+    ) -> dict:
+        account = current_account_id.get()
+        try:
+            result = await service.log_turn(
+                user_message=user_message,
+                reply=reply,
+                thread_id=thread_id,
+                turn=turn,
+                prev_user_anchor=prev_user_anchor,
+                title_hint=title_hint,
+                account=account,
+                client="remote",
+            )
+            return public_result(result)
+        except Exception as e:
+            logger.error("vault_log_turn error: %s", e)
+            return {"ok": False, "code": "server_error", "retryable": True}
+
+    async def vault_log_turn(
+        user_message: str,
+        reply: str | None = None,
+        thread_id: str | None = None,
+        turn: int | None = None,
+        prev_user_anchor: str | None = None,
+        title_hint: str | None = None,
+    ) -> dict:
+        return await _log_turn(user_message, reply, thread_id, turn, prev_user_anchor, title_hint)
+
+    async def vault_log_turn_user_only(
+        user_message: str,
+        thread_id: str | None = None,
+        turn: int | None = None,
+        prev_user_anchor: str | None = None,
+        title_hint: str | None = None,
+    ) -> dict:
+        return await _log_turn(user_message, None, thread_id, turn, prev_user_anchor, title_hint)
+
+    # E-floor: in user_only mode the reply parameter is not part of the schema at all
+    if capture == CaptureMode.USER_ONLY:
+        server.tool(**log_kwargs)(vault_log_turn_user_only)
+    else:
+        server.tool(**log_kwargs)(vault_log_turn)
+
+    # 1b. Legacy vault_save_turn
     save_kwargs: dict = {"description": _SAVE_TURN_DESC}
     if _HAS_ANNOTATIONS:
         save_kwargs["annotations"] = ToolAnnotations(
@@ -89,7 +163,6 @@ def create_http_mcp_server(service: TurnService) -> MCPServer:
             openWorldHint=False,
         )
 
-    @server.tool(**save_kwargs)
     async def vault_save_turn(
         user_query: str,
         thread_id: str | None = None,
@@ -123,6 +196,9 @@ def create_http_mcp_server(service: TurnService) -> MCPServer:
             logger.error("vault_save_turn error: %s", e)
             return {"ok": False, "code": "server_error", "retryable": True}
 
+    if legacy_save_turn_enabled():
+        server.tool(**save_kwargs)(vault_save_turn)
+
     # 2. vault_backfill
     backfill_kwargs: dict = {"description": _BACKFILL_DESC}
     if _HAS_ANNOTATIONS:
@@ -142,7 +218,7 @@ def create_http_mcp_server(service: TurnService) -> MCPServer:
         try:
             return await service.backfill(
                 thread_id=thread_id,
-                turns=turns,
+                turns=user_messages_only(turns),
                 account=account,
             )
         except Exception as e:

@@ -8,7 +8,7 @@ Verifies:
 - Streamable HTTP protocol over /mcp:
   - initialize handshake
   - tools/list returning vault_* tools with honest descriptions
-  - tools/call executing vault_save_turn and vault_find against PgStore
+  - tools/call executing vault_log_turn and vault_find against PgStore
 """
 
 import asyncio
@@ -189,24 +189,26 @@ async def test_streamable_http_mcp_flow(app, pg_store):
             tools_data = json.loads(data_line[len("data:"):].strip())
 
             tool_names = [t["name"] for t in tools_data["result"]["tools"]]
-            assert "vault_save_turn" in tool_names
+            assert "vault_log_turn" in tool_names
+            assert "vault_save_turn" not in tool_names  # legacy echo tool is off by default (B7)
             assert "vault_backfill" in tool_names
             assert "vault_find" in tool_names
             assert "vault_stats" in tool_names
 
             # Verify honest remote description (§2 S8)
-            save_desc = next(t["description"] for t in tools_data["result"]["tools"] if t["name"] == "vault_save_turn")
+            save_desc = next(t["description"] for t in tools_data["result"]["tools"] if t["name"] == "vault_log_turn")
             assert "ThreadVault account" in save_desc
 
-            # 3. Call tool: vault_save_turn
+            # 3. Call tool: vault_log_turn
             call_req = {
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "tools/call",
                 "params": {
-                    "name": "vault_save_turn",
+                    "name": "vault_log_turn",
                     "arguments": {
-                        "user_query": "Hello via HTTP Streamable transport!",
+                        "user_message": "Hello via HTTP Streamable transport!",
+                        "reply": "Hello back.",
                         "title_hint": "HTTP Test Thread",
                     },
                 },
@@ -220,13 +222,15 @@ async def test_streamable_http_mcp_flow(app, pg_store):
             content = call_data["result"]["content"][0]["text"]
             result_dict = json.loads(content)
             assert result_dict["ok"] is True
-            assert result_dict["n"] == 1
+            assert result_dict["next_turn"] == 2
+            assert set(result_dict) == {"ok", "thread_id", "next_turn"}  # I-5: tiny, data-only
             tid = result_dict["thread_id"]
 
-            # Verify turn was written to Postgres
+            # Verify both sides of the turn were written to Postgres
             stats = await pg_store.stats("http-user", tid)
             assert stats is not None
-            assert stats.total_turns == 1
+            assert stats.total_turns == 2
+            assert stats.reported == 1
 
             # 4. Call tool: vault_find
             find_req = {
@@ -269,4 +273,4 @@ async def test_streamable_http_mcp_flow(app, pg_store):
             stats_data = json.loads(data_line[len("data:"):].strip())
             stats_dict = json.loads(stats_data["result"]["content"][0]["text"])
             assert stats_dict["ok"] is True
-            assert stats_dict["total_turns"] == 1
+            assert stats_dict["total_turns"] == 2  # user + reply in one call (B7)

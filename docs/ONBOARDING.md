@@ -9,9 +9,17 @@
 
 If you previously used the local stdio version of ThreadVault:
 
-> **IMPORTANT:** You **must remove** the stdio entry from your `claude_desktop_config.json`.
->
-> If you keep both the stdio entry and the new remote connector, Claude Desktop will register duplicate tools with identical names (`vault_save_turn`, `vault_find`), leading to split archives and erratic model behavior.
+> **Note:** The local stdio server and the remote connector now use different tool names
+> (`vault_local_log_turn`, `vault_local_find`, … vs `vault_log_turn`, `vault_find`, …), so a call can only
+> reach the server it was meant for. If both are enabled in a chat, that chat is saved in both places:
+> locally to `vault_local/` and remotely to the GitHub archive. Remove the stdio entry if you only want
+> the remote archive. A local read-only copy of the remote archive: `scripts/pull_remote_vault.ps1`
+> (defaults to `vault_rich_fixture/`).
+
+> **Claude Code is not archived.** Claude Code loads your claude.ai connectors into coding sessions. ThreadVault
+> withholds its save tools from Claude Code (`THREADVAULT_SKIP_CLIENTS`, default `claude-code`). To stop
+> Claude Code from loading the connector at all, add to `~/.claude/settings.json`:
+> `"deniedMcpServers": [{"serverName": "claude.ai thread"}]`.
 
 ### Removing the Stdio Entry
 1. Open your Claude Desktop configuration file:
@@ -70,15 +78,16 @@ Anthropic custom connectors are remote MCP servers configured through the Claude
 
 ### Step B: Configure Permissions
 On your first conversation turn, Claude will request permission to use the tools:
-- Select **"Always allow"** for `vault_save_turn` and `vault_backfill`.
+- Select **"Always allow"** for `vault_log_turn` and `vault_backfill`.
 - *Note:* Requiring manual approval on every turn will cause missed saves and prompt fatigue.
 
 ### Step C: Add Personal Preference
 In Claude's **Settings → Preferences** (Personal Preferences), paste the following directive:
 ```text
 I use the ThreadVault connector to archive my chats. When it's available, call
-vault_save_turn at the start of each reply as its description explains. If I say "don't save
-this chat", skip it for that conversation.
+its log-turn tool (vault_log_turn, or vault_local_log_turn for the local server) once after
+finishing each reply, as its description explains. If I say
+"don't save this chat", skip it for that conversation.
 ```
 This preference syncs across all devices and instructs Claude to log turns routinely.
 

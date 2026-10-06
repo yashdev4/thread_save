@@ -131,6 +131,6 @@ async def build_and_verify_fixture(target_dir: Path):
 
 
 if __name__ == "__main__":
-    vault_path = Path("vault_rich_fixture")
+    vault_path = Path("vault_test_fixture")  # vault_rich_fixture now holds the deployed mirror
     res = asyncio.run(build_and_verify_fixture(vault_path))
     print("fsck return code:", res)

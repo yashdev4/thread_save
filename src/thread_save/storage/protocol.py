@@ -26,6 +26,7 @@ class ThreadStats(BaseModel):
     total_turns: int
     verbatim: int
     abridged: int
+    reported: int = 0
     truncated: int = 0
     stubs: int
     gaps_open: list[int]

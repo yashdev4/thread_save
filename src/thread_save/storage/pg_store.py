@@ -53,7 +53,8 @@ _RANK_TO_FIDELITY: dict[int, Fidelity] = {
     1: Fidelity.STUB,
     2: Fidelity.TRUNCATED,
     3: Fidelity.ABRIDGED,
-    4: Fidelity.VERBATIM,
+    4: Fidelity.REPORTED,
+    5: Fidelity.VERBATIM,
 }
 
 
@@ -848,6 +849,7 @@ class PgStore:
                     total_turns=total_turns,
                     verbatim=fc.get(Fidelity.VERBATIM.rank, 0),
                     abridged=fc.get(Fidelity.ABRIDGED.rank, 0),
+                    reported=fc.get(Fidelity.REPORTED.rank, 0),
                     truncated=fc.get(Fidelity.TRUNCATED.rank, 0),
                     stubs=fc.get(Fidelity.STUB.rank, 0),
                     gaps_open=gaps_open,
@@ -896,6 +898,7 @@ class PgStore:
             "fidelity_counts": {
                 "verbatim": st.verbatim,
                 "abridged": st.abridged,
+                "reported": st.reported,
                 "truncated": st.truncated,
                 "stub": st.stubs,
                 "open": 0,

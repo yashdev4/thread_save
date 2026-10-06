@@ -7,8 +7,10 @@ vault_*/
 .hypothesis/
 test_results.txt
 hypothesis_out.txt
+
 *.log
 .env
 .env.*
+PROGRESS.md
 .docs/
 

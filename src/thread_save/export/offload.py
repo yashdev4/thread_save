@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import re
 import logging
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
@@ -411,54 +412,14 @@ class OffloadManager:
                 ensure_directory(full_path.parent)
                 full_path.write_text(content, encoding="utf-8")
 
-            # 3. Rebuild in-memory state in store
-            last_page_file: Optional[Path] = None
-            last_meta: Optional[ThreadMeta] = None
-            max_page_num = 0
-
+            # 3. Rebuild in-memory state in store (same code path as a local restart, B6 L1)
+            pages = []
             for rel_path, content in fetched_pages.items():
                 full_path = store._config.vault_root / rel_path
-                meta, body_text = parse_front_matter(content)
-                if meta.page >= max_page_num:
-                    max_page_num = meta.page
-                    last_page_file = full_path
-                    last_meta = meta
-
-                turns = parse_turns(body_text, nonce=meta.nonce)
-                for t in turns:
-                    store._slots.record(
-                        thread_id,
-                        SlotKey(t.turn_index, t.role),
-                        t.content_hash,
-                        t.fidelity,
-                        t.char_count,
-                        turn_key=t.turn_key,
-                    )
-
-            if last_meta and last_page_file:
-                from thread_save.storage.writer import _ThreadEntry
-                tid_short = generate_thread_id_short(thread_id)
-                entry = _ThreadEntry(last_meta, last_meta.created, tid_short)
-                # Rebuild anchor map
-                for rel_path, content in fetched_pages.items():
-                    meta, body_text = parse_front_matter(content)
-                    turns = parse_turns(body_text, nonce=meta.nonce)
-                    for t in turns:
-                        if t.role == "user" and t.anchor:
-                            entry.anchor_map[t.turn_index] = normalise_anchor(t.anchor)
-
-                store._registry.register(thread_id, entry)
-
-                cur_bytes = len(last_page_file.read_bytes())
-                ps = PageState(
-                    thread_id=thread_id,
-                    current_page=last_meta.page,
-                    current_bytes=cur_bytes,
-                    current_turn_count=last_meta.turn_count,
-                    global_turn_index=pointer.max_n,
-                    file_path=str(last_page_file),
-                )
-                store._page_states[thread_id] = ps
+                m = re.search(r"_p(\d+)\.md$", full_path.name)
+                page_no = int(m.group(1)) if m else parse_front_matter(content)[0].page
+                pages.append((page_no, full_path, content))
+            store.restore_thread_state(thread_id, pages)
 
             # 4. Remove from offloaded index
             self.offload_index.delete(thread_id)

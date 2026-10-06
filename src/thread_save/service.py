@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
-from thread_save.config import VaultConfig, load_config
+from thread_save.config import CaptureMode, VaultConfig, load_config
 from thread_save.models import Fidelity, MAX_BODY_CHARS
 from thread_save.security.idempotency import compute_content_hash
 from thread_save.security.redactor import redact_text
@@ -46,6 +47,21 @@ def check_opt_out(text: str) -> bool:
     """Check if text contains an opt-out phrase."""
     normalised = text.strip().lower()
     return any(phrase in normalised for phrase in _OPT_OUT_PHRASES)
+
+
+# A whole line in brackets that describes content instead of being it, e.g.
+# "[Extended breakdown covering failure scenarios ...]" (P1-12). Links end in ")".
+_SUMMARY_LINE_RE = re.compile(r"^\s*\[[^\[\]]{30,}\]\s*$", re.M)
+
+# log_turn never creates more not_logged stubs than this in one call
+_MAX_NOT_LOGGED_PER_CALL = 50
+
+
+def classify_reply(reply: str) -> Fidelity:
+    """B7 E-truth: a reply sent back by the model is never stored as verbatim."""
+    if "[REDACTED]" in reply or _SUMMARY_LINE_RE.search(reply):
+        return Fidelity.ABRIDGED
+    return Fidelity.REPORTED
 
 
 class _ChunkBuffer:
@@ -234,46 +250,17 @@ class TurnService:
         turn_key = compute_content_hash(turn_key_input)
 
         # Check offloaded thread handling (§1 G7)
-        orig_bound_id = None
-        offloaded_threads = getattr(self._store, "offloaded_threads", {})
-        if bound_id in offloaded_threads:
-            offload_info = offloaded_threads[bound_id]
-            recent_keys = offload_info.get("recent_turn_keys", [])
-            # Dedup check via pointer's recent_turn_keys
-            if turn_key in recent_keys:
-                return {
-                    "ok": True,
-                    "thread_id": bound_id,
-                    "action": "no_op",
-                    "n": offload_info.get("max_n", 1),
-                    "binding": binding,
-                }
-
-            # Resumed conversation -> attempt rehydration
-            rehydrated = False
-            target = getattr(self, "_github_target", None) or getattr(self._store, "_github_target", None)
-            if target and hasattr(self._store, "offload_manager"):
-                rehydrated = await self._store.offload_manager.rehydrate_thread(
-                    self._store, bound_id, target
-                )
-
-            if rehydrated:
-                binding = "rehydrated"
-            else:
-                # Continuation thread fallback (§1 G7):
-                # If rehydrate fails (GitHub unreachable, token expired, hash mismatch),
-                # create a continuation thread with continues: <thread_id> in front matter,
-                # return ok: true. Never block save or corrupt partial restore.
-                logger.warning("Rehydration failed for %s; creating continuation thread", bound_id)
-                orig_bound_id = bound_id
-                cont_meta = await self._store.create_thread(
-                    account,
-                    title_hint=title_hint or offload_info.get("title") or "Continuation Thread",
-                    client=client,
-                    continues=orig_bound_id,
-                )
-                bound_id = cont_meta.thread_id
-                binding = "continuation"
+        bound_id, binding, orig_bound_id, dedup_n = await self._resolve_offloaded(
+            account, bound_id, binding, turn_key, title_hint, client
+        )
+        if dedup_n is not None:
+            return {
+                "ok": True,
+                "thread_id": bound_id,
+                "action": "no_op",
+                "n": dedup_n,
+                "binding": binding,
+            }
 
         # 8. Single transaction for all writes (§4.1)
         async with self._store.thread_txn(account, bound_id) as txn:
@@ -388,6 +375,217 @@ class TurnService:
             result["log_next_turn"] = True
 
         return result
+
+    async def _resolve_offloaded(
+        self,
+        account: str,
+        bound_id: str,
+        binding: str,
+        turn_key: str,
+        title_hint: str | None,
+        client: str,
+    ) -> tuple[str, str, str | None, int | None]:
+        """Bring an offloaded thread back, or open a continuation thread (§1 G7).
+
+        Returns (thread_id, binding, original_thread_id, dedup_n). A non-None
+        dedup_n means the turn is already archived and the call is a no-op.
+        """
+        offloaded_threads = getattr(self._store, "offloaded_threads", {})
+        if bound_id not in offloaded_threads:
+            return bound_id, binding, None, None
+
+        offload_info = offloaded_threads[bound_id]
+        # Dedup check via pointer's recent_turn_keys
+        if turn_key in offload_info.get("recent_turn_keys", []):
+            return bound_id, binding, None, offload_info.get("max_n", 1)
+
+        # Resumed conversation -> attempt rehydration
+        rehydrated = False
+        target = getattr(self, "_github_target", None) or getattr(self._store, "_github_target", None)
+        if target and hasattr(self._store, "offload_manager"):
+            rehydrated = await self._store.offload_manager.rehydrate_thread(
+                self._store, bound_id, target
+            )
+        if rehydrated:
+            return bound_id, "rehydrated", None, None
+
+        # Continuation thread fallback (§1 G7):
+        # If rehydrate fails (GitHub unreachable, token expired, hash mismatch),
+        # create a continuation thread with continues: <thread_id> in front matter,
+        # return ok: true. Never block save or corrupt partial restore.
+        logger.warning("Rehydration failed for %s; creating continuation thread", bound_id)
+        cont_meta = await self._store.create_thread(
+            account,
+            title_hint=title_hint or offload_info.get("title") or "Continuation Thread",
+            client=client,
+            continues=bound_id,
+        )
+        return cont_meta.thread_id, "continuation", bound_id, None
+
+    async def log_turn(
+        self,
+        user_message: str,
+        reply: str | None = None,
+        thread_id: str | None = None,
+        turn: int | None = None,
+        prev_user_anchor: str | None = None,
+        title_hint: str | None = None,
+        model_hint: str = "",
+        account: str | None = None,
+        client: str = "claude-desktop",
+    ) -> dict:
+        """Archive one complete turn after the reply is written (B7 path E).
+
+        One call writes (n, user) and (n, assistant) in one transaction. The model
+        is never asked for earlier output: the server issues thread_id and
+        next_turn, and turns that were never logged become `not_logged` stubs.
+        Returns an internal dict; tool wrappers expose only ok/thread_id/next_turn.
+        """
+        account = account or self._config.default_account
+
+        if self._config.is_paused:
+            return {"ok": True, "paused": True}
+        if check_opt_out(user_message):
+            if thread_id:
+                self.pause_thread(thread_id, account)
+            return {"ok": True, "paused": True}
+        if thread_id and self.is_thread_paused(thread_id, account):
+            return {"ok": True, "paused": True}
+
+        # E-floor: in user_only mode nothing the model wrote is stored
+        if self._config.capture == CaptureMode.USER_ONLY:
+            reply = None
+
+        # Content limits. User text keeps the global cap; the reply has the
+        # smaller echo budget (E-budget) and is never claimed verbatim (E-truth).
+        user_fidelity = Fidelity.VERBATIM
+        if len(user_message) > MAX_BODY_CHARS:
+            user_message = user_message[:MAX_BODY_CHARS]
+            user_fidelity = Fidelity.TRUNCATED
+
+        reply_fidelity: Fidelity | None = None
+        if reply is not None:
+            reply_fidelity = classify_reply(reply)
+            if len(reply) > self._config.reply_max_chars:
+                reply = reply[: self._config.reply_max_chars]
+                reply_fidelity = Fidelity.TRUNCATED
+
+        # Turn key from the raw text: redaction masks can change between
+        # processes, and a retry after a restart must still be a no-op.
+        norm_prev = normalise_anchor(prev_user_anchor or "", max_chars=1_000_000)
+        norm_user = normalise_anchor(user_message, max_chars=1_000_000)
+        turn_str = str(turn) if turn is not None else ""
+        turn_key = compute_content_hash(
+            f"log1|{turn_str}|{norm_prev}|{norm_user}|{compute_content_hash(reply or '')}"
+        )
+        user_anchor = normalise_anchor(user_message)
+
+        if self._config.redaction_enabled:
+            user_stored = redact_text(user_message).text
+            reply_stored = redact_text(reply).text if reply is not None else None
+        else:
+            user_stored = user_message
+            reply_stored = reply
+
+        bind_res = await self._store.bind_thread(account, thread_id, prev_user_anchor)
+        bound_id = bind_res.thread_id
+        binding = bind_res.method
+        if not bound_id:
+            meta = await self._store.create_thread(
+                account, title_hint or "Untitled Thread", client=client
+            )
+            bound_id = meta.thread_id
+            binding = "new"
+
+        if await self._store.is_tombstoned(account, bound_id):
+            return {"ok": True, "thread_id": bound_id, "tombstoned": True}
+
+        bound_id, binding, orig_bound_id, dedup_n = await self._resolve_offloaded(
+            account, bound_id, binding, turn_key, title_hint, client
+        )
+        if dedup_n is not None:
+            return {
+                "ok": True, "thread_id": bound_id, "n": dedup_n,
+                "next_turn": dedup_n + 1, "binding": binding, "action": "no_op",
+            }
+
+        gap_ns: list[int] = []
+        action = "no_op"
+        async with self._store.thread_txn(account, bound_id) as txn:
+            slots = await txn.load_slots()
+            existing_n = slots.find_turn_key(bound_id, turn_key)
+            if existing_n is not None:
+                # Retry of a call that already committed: change nothing (W-4)
+                n = existing_n
+            else:
+                action = "write"
+                highest = slots.highest_n(bound_id)
+                n = highest + 1
+                # A stale or absurd `turn` never overwrites or floods the thread
+                if turn is not None and highest + 1 < turn <= highest + 1 + _MAX_NOT_LOGGED_PER_CALL:
+                    gap_ns = list(range(highest + 1, turn))
+                    n = turn
+
+                if gap_ns:
+                    await txn.record_gaps(gap_ns)
+                    await txn.write_stubs([Stub(n=g, anchor="") for g in gap_ns])
+
+                await txn.upsert_turn(
+                    n=n,
+                    role="user",
+                    body=user_stored,
+                    fidelity=user_fidelity,
+                    anchor=user_anchor,
+                    turn_key=turn_key,
+                )
+                if reply_stored is not None and reply_fidelity is not None:
+                    await txn.upsert_turn(
+                        n=n,
+                        role="assistant",
+                        body=reply_stored,
+                        fidelity=reply_fidelity,
+                        model=model_hint,
+                    )
+                await txn.enqueue_export()
+
+        # not_logged gaps are recorded for stats but never reported back:
+        # nothing asks the model to resend earlier turns (E-gaps)
+        tracker = self.gap_tracker
+        if gap_ns and tracker is not None and hasattr(tracker, "mark_requested"):
+            for g in gap_ns:
+                tracker.mark_requested(bound_id, g)
+
+        result: dict = {
+            "ok": True,
+            "thread_id": bound_id,
+            "n": n,
+            "next_turn": n + 1,
+            "binding": binding,
+            "action": action,
+            "not_logged": gap_ns,
+            "reply_fidelity": reply_fidelity.value if reply_fidelity else None,
+            "bytes": len((user_stored or "").encode("utf-8"))
+            + len((reply_stored or "").encode("utf-8")),
+        }
+        if orig_bound_id:
+            result["continues"] = orig_bound_id
+        return result
+
+    def thread_index_info(self, thread_id: str) -> dict:
+        """Title/slug/account/path of a thread, for the local search index (P2-12)."""
+        registry = self._registry
+        entry = registry.get(thread_id) if registry is not None else None
+        if entry is None:
+            return {}
+        ps = getattr(self._store, "_page_states", {}).get(thread_id)
+        return {
+            "title": entry.meta.title,
+            "slug": entry.meta.slug,
+            "account": entry.meta.account,
+            "path": ps.file_path if ps else "",
+            "created": entry.meta.created,
+            "updated": entry.meta.updated,
+        }
 
     async def backfill(
         self,

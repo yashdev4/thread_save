@@ -290,9 +290,10 @@ async def test_oauth_authenticated_mcp_and_rls_isolation(oauth_setup, pg_store):
                     "id": 2,
                     "method": "tools/call",
                     "params": {
-                        "name": "vault_save_turn",
+                        "name": "vault_log_turn",
                         "arguments": {
-                            "user_query": "Alice's confidential message",
+                            "user_message": "Alice's confidential message",
+                            "reply": "Noted.",
                             "title_hint": "Alice Thread",
                         },
                     },

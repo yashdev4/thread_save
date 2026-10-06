@@ -30,6 +30,18 @@ from thread_save.web.viewer import create_viewer_router
 logger = logging.getLogger("thread_save.web.app")
 
 
+def _configure_logging() -> None:
+    """Uvicorn only sets up its own loggers; without this, thread_save INFO lines
+    (which client connected, whether it is archived: P1-14) never reach the platform log."""
+    tv = logging.getLogger("thread_save")
+    if tv.level == logging.NOTSET:
+        tv.setLevel(logging.INFO)
+    if not tv.handlers and not logging.getLogger().handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+        tv.addHandler(handler)
+
+
 def create_app(
     pg_store: Optional[PgStore] = None,
     service: Optional[TurnService] = None,
@@ -39,6 +51,7 @@ def create_app(
     enforce_auth: Optional[bool] = None,
     host: Optional[str] = None,
 ) -> FastAPI:
+    _configure_logging()
     cfg = config or load_config()
 
     # Resolve enforce_auth (fail-closed default: True in production/server startup)

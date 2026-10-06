@@ -29,15 +29,16 @@ ThreadVault relies on key platform mechanics verified against Anthropic's remote
 
 ### Step 2: Configure Permissions
 1. On your first conversation, Claude will prompt for tool execution approval.
-2. Set `vault_save_turn` and `vault_backfill` to **"Always allow"**.
+2. Set `vault_log_turn` and `vault_backfill` to **"Always allow"**.
    > *Note:* Per-call prompts will quickly derail automatic conversational logging.
 
 ### Step 3: Add Global User Preference
 In Claude's **Personal Preferences** (Settings → Preferences), add the following directive:
 ```text
 I use the ThreadVault connector to archive my chats. When it's available, call
-vault_save_turn at the start of each reply as its description explains. If I say "don't save
-this chat", skip it for that conversation.
+its log-turn tool (vault_log_turn, or vault_local_log_turn for the local server) once after
+finishing each reply, as its description explains. If I say
+"don't save this chat", skip it for that conversation.
 ```
 
 ### Step 4: Mobile Inheritance (iOS & Android)
@@ -83,7 +84,7 @@ To manually certify a live production deployment across physical devices using l
    > *"Let's design a distributed event-driven system architecture."*
 2. Verify via the live remotely exposed server:
    - Live health check: `GET https://<your-domain>/health` returns HTTP 200 with `status: "healthy"` and `database: "connected"`.
-   - Tool execution: In Claude Desktop, `vault_save_turn` returns `{"ok": true, "thread_id": "...", "n": 1}`.
+   - Tool execution: In Claude Desktop, `vault_log_turn` returns `{"ok": true, "thread_id": "...", "next_turn": 2}`.
 3. Continue for 3 turns on technical architecture details.
 4. **Redaction test:** In Turn 4, mention a test key:
    > *"For our sink connector, use api_key = 'test_key_live_abcdef1234567890abcdef1234567890'."*
@@ -135,7 +136,7 @@ Before full production launch, confirm each live remotely exposed feature:
 
 - [ ] **Live Health Probe:** `GET https://<domain>/health` returns `status: "healthy"` and `database: "connected"`.
 - [ ] **Connector Visibility:** Remote connector URL `https://<domain>/mcp` active on Claude Web and Claude Desktop.
-- [ ] **Mobile Functionality:** Tool calls (`vault_save_turn`) observed firing on live iOS and Android apps.
+- [ ] **Mobile Functionality:** Tool calls (`vault_log_turn`) observed firing on live iOS and Android apps.
 - [ ] **Cross-Device Continuity:** Switching from Desktop to Mobile mid-conversation updates the exact same `thread_id`.
 - [ ] **Zero Splits:** Single canonical thread maintained across device boundaries (`split_rate: 0%` via `vault_stats`).
 - [ ] **Pre-Insert Redaction:** Sensitive patterns scrubbed in live database and displayed as `[REDACTED:...]` in `/v/{token}`.

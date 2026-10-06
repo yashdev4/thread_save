@@ -10,6 +10,8 @@ Rebuilt for the invocation reliability layer:
 from __future__ import annotations
 
 import asyncio
+import glob
+import logging
 import os
 import re
 from datetime import datetime, timezone
@@ -38,6 +40,7 @@ from thread_save.storage.formatter import (
     format_stub_body,
     format_turn,
     format_turn_separator,
+    parse_page,
 )
 from thread_save.storage.gaps import GapTracker
 from thread_save.storage.identity import (
@@ -60,6 +63,12 @@ from thread_save.storage.protocol import (
     UpsertResult,
 )
 
+logger = logging.getLogger("thread_save.storage.writer")
+
+_PAGE_FILE_RE = re.compile(r"_p(\d+)\.md$")
+_TURN_OPEN_RE = re.compile(r"<!-- turn i=(\d+) ")
+_THREAD_ID_RE = re.compile(r'^"?thread_id"?:\s*"?([0-9A-Z]{26})"?', re.M)
+
 
 class _CountList(list):
     def __eq__(self, other):
@@ -69,16 +78,22 @@ class _CountList(list):
 
 
 class _ThreadEntry:
-    __slots__ = ("meta", "created_dt", "thread_id_short", "anchor_map")
+    __slots__ = ("meta", "created_dt", "thread_id_short", "anchor_map", "persisted")
 
     def __init__(
-        self, meta: ThreadMeta, created_dt: datetime, thread_id_short: str
+        self,
+        meta: ThreadMeta,
+        created_dt: datetime,
+        thread_id_short: str,
+        persisted: bool = True,
     ):
         self.meta = meta
         self.created_dt = created_dt
         self.thread_id_short = thread_id_short
         # {n: normalised_anchor} for user turns in this thread
         self.anchor_map: dict[int, str] = {}
+        # False until the first transaction commits its page to disk (W-11)
+        self.persisted = persisted
 
 
 class _ThreadRegistry:
@@ -122,18 +137,28 @@ class FileThreadTxn:
         self._staged_slots: list[tuple[SlotKey, str, Fidelity, int, Optional[str]]] = []
         self._staged_anchor_updates: dict[int, str] = {}
         self._staged_gaps: list[int] = []
+        self._ps_snapshot: Optional[PageState] = None
+        self._meta_snapshot: Optional[ThreadMeta] = None
 
     async def __aenter__(self) -> ThreadTxn:
         self._lock = self._store._get_thread_lock(self._thread_id)
         await self._lock.acquire()
 
-        self._entry = self._store._registry.get(self._thread_id)
-        if not self._entry:
-            raise ValueError(f"Thread {self._thread_id} not found in registry")
+        try:
+            self._entry = self._store._registry.get(self._thread_id)
+            if not self._entry:
+                raise ValueError(f"Thread {self._thread_id} not found in registry")
 
-        self._ps = self._store._page_states.get(self._thread_id)
-        if not self._ps:
-            raise ValueError(f"Thread {self._thread_id} page state not found")
+            self._ps = self._store._page_states.get(self._thread_id)
+            if not self._ps:
+                raise ValueError(f"Thread {self._thread_id} page state not found")
+        except BaseException:
+            self._lock.release()
+            raise
+
+        # In-memory edits are rolled back if the transaction fails (W-11)
+        self._ps_snapshot = self._ps.model_copy()
+        self._meta_snapshot = self._entry.meta.model_copy(deep=True)
 
         self._current_page_file = Path(self._ps.file_path)
         if self._current_page_file.exists():
@@ -331,53 +356,85 @@ class FileThreadTxn:
         try:
             if exc_type is not None:
                 # Invariant W-11: on exception, nothing is written to disk!
+                self._rollback()
                 return False
-
-            assert self._entry is not None and self._ps is not None
-            now = datetime.now(timezone.utc).astimezone()
-
-            for k, v in self._staged_meta_updates.items():
-                if hasattr(self._entry.meta, k):
-                    setattr(self._entry.meta, k, v)
-            self._entry.meta.updated = now
-            self._entry.meta.turn_count = self._ps.current_turn_count
-            self._entry.meta.bytes = self._ps.current_bytes
-
-            # Update front matter in current page content
-            new_fm = format_front_matter(self._entry.meta)
-            cur_text = self._staged_page_edits[self._current_page_file]
-            parts = cur_text.split("---\n", 2)
-            if len(parts) >= 3:
-                self._staged_page_edits[self._current_page_file] = new_fm + parts[2]
-
-            # Write all staged page edits to disk atomically
-            for pfile, ptext in self._staged_page_edits.items():
-                ensure_directory(pfile.parent)
-                await self._store._atomic_write(pfile, ptext.encode("utf-8"))
-
-            # Commit slots and gaps in-memory
-            for key, body_hash, fidelity, length, turn_key in self._staged_slots:
-                self._store._slots.record(
-                    self._thread_id, key, body_hash, fidelity, length, turn_key=turn_key
-                )
-
-            for gn, anc in self._staged_anchor_updates.items():
-                self._entry.anchor_map[gn] = anc
-
-            if self._staged_gaps:
-                self._store._gaps.register_gaps(self._thread_id, self._staged_gaps)
-
-            # Update active.json
-            client_key = f"{self._entry.meta.client}:{self._entry.meta.account}"
-            last_anchor = self._entry.anchor_map.get(
-                max(self._entry.anchor_map.keys(), default=0), ""
-            )
-            update_active_thread(
-                self._store._config, client_key, self._thread_id, last_anchor
-            )
+            try:
+                await self._commit()
+            except BaseException:
+                self._rollback()
+                raise
         finally:
             if self._lock:
                 self._lock.release()
+
+    def _rollback(self) -> None:
+        """Undo in-memory edits; forget a thread whose first page never reached disk."""
+        if self._entry is not None and not self._entry.persisted:
+            self._store._discard_thread(self._thread_id)
+            return
+        if self._ps_snapshot is not None:
+            self._store._page_states[self._thread_id] = self._ps_snapshot
+        if self._entry is not None and self._meta_snapshot is not None:
+            self._entry.meta = self._meta_snapshot
+
+    async def _commit(self) -> None:
+        assert self._entry is not None and self._ps is not None
+        if (
+            self._entry.persisted
+            and not self._staged_slots
+            and not self._staged_meta_updates
+            and not self._staged_gaps
+        ):
+            return  # nothing changed: a retry must not touch the file (W-4)
+        now = datetime.now(timezone.utc).astimezone()
+
+        for k, v in self._staged_meta_updates.items():
+            if hasattr(self._entry.meta, k):
+                setattr(self._entry.meta, k, v)
+        self._entry.meta.updated = now
+        self._entry.meta.turn_count = self._ps.current_turn_count
+        self._entry.meta.bytes = self._ps.current_bytes
+
+        # Update front matter in current page content: this page's number,
+        # its predecessor and the turn range it holds (P2-12)
+        cur_text = self._staged_page_edits[self._current_page_file]
+        page_ns = [int(m) for m in _TURN_OPEN_RE.findall(cur_text)]
+        page_meta = self._entry.meta.model_copy(update={
+            "page": self._ps.current_page,
+            "prev": self._store._page_filename(self._entry, self._ps.current_page - 1),
+            "turn_range": [min(page_ns), max(page_ns)] if page_ns else [1, 0],
+        })
+        new_fm = format_front_matter(page_meta)
+        parts = cur_text.split("---\n", 2)
+        if len(parts) >= 3:
+            self._staged_page_edits[self._current_page_file] = new_fm + parts[2]
+
+        # Write all staged page edits to disk atomically
+        for pfile, ptext in self._staged_page_edits.items():
+            ensure_directory(pfile.parent)
+            await self._store._atomic_write(pfile, ptext.encode("utf-8"))
+        self._entry.persisted = True
+
+        # Commit slots and gaps in-memory
+        for key, body_hash, fidelity, length, turn_key in self._staged_slots:
+            self._store._slots.record(
+                self._thread_id, key, body_hash, fidelity, length, turn_key=turn_key
+            )
+
+        for gn, anc in self._staged_anchor_updates.items():
+            self._entry.anchor_map[gn] = anc
+
+        if self._staged_gaps:
+            self._store._gaps.register_gaps(self._thread_id, self._staged_gaps)
+
+        # Update active.json
+        client_key = f"{self._entry.meta.client}:{self._entry.meta.account}"
+        last_anchor = self._entry.anchor_map.get(
+            max(self._entry.anchor_map.keys(), default=0), ""
+        )
+        update_active_thread(
+            self._store._config, client_key, self._thread_id, last_anchor
+        )
 
 
 class FileStore:
@@ -396,6 +453,7 @@ class FileStore:
             tid: ptr.to_dict() for tid, ptr in self._offload_mgr.offload_index.load().items()
         }
         self._pending_export_threads: set[str] = set()
+        self._loaded_accounts: set[str] = set()
 
     def _get_thread_lock(self, thread_id: str) -> asyncio.Lock:
         if thread_id not in self._file_locks:
@@ -449,11 +507,11 @@ class FileStore:
         file_path = resolve_thread_path(
             self._config, account, now, tid_short, slug, 1,
         )
-        ensure_directory(file_path.parent)
 
+        # The page reaches disk only when the first transaction commits (W-11):
+        # a failed first save must not leave a header-only file behind.
         content = format_new_page(meta)
         content_bytes = content.encode("utf-8")
-        await self._atomic_write(file_path, content_bytes)
 
         ps = PageState(
             thread_id=thread_id,
@@ -465,13 +523,139 @@ class FileStore:
         )
         self._page_states[thread_id] = ps
 
-        entry = _ThreadEntry(meta, now, tid_short)
+        entry = _ThreadEntry(meta, now, tid_short, persisted=False)
         self._registry.register(thread_id, entry)
 
-        client_key = f"{client}:{account}"
-        update_active_thread(self._config, client_key, thread_id)
-
         return thread_id, ps
+
+    def _discard_thread(self, thread_id: str) -> None:
+        """Forget a thread that was created in memory but never written."""
+        self._registry._threads.pop(thread_id, None)
+        self._page_states.pop(thread_id, None)
+
+    def _page_filename(self, entry: _ThreadEntry, page: int) -> Optional[str]:
+        if page < 1:
+            return None
+        return resolve_thread_path(
+            self._config, entry.meta.account, entry.created_dt,
+            entry.thread_id_short, entry.meta.slug, page,
+        ).name
+
+    # ── Restart recovery (B6 L1) ───────────────────────────────────────
+
+    def _account_dir(self, account: str) -> Optional[Path]:
+        if not account or account.startswith((".", "_")):
+            return None
+        root = self._config.vault_root.resolve()
+        acc_dir = (root / account).resolve()
+        if acc_dir.parent != root or not acc_dir.is_dir():
+            return None
+        return acc_dir
+
+    def restore_thread_state(
+        self, thread_id: str, pages: list[tuple[int, Path, str]]
+    ) -> bool:
+        """Rebuild registry, page state, slots, anchors and gaps from page files.
+
+        `pages` holds (page number, path, markdown). The page number comes from the
+        filename, because older front matter always said `page: 1`.
+        """
+        parsed = []
+        for page_no, path, content in sorted(pages, key=lambda x: x[0]):
+            try:
+                meta, turns = parse_page(content)
+            except Exception as e:
+                logger.warning("Cannot parse %s during restore: %s", path, e)
+                return False
+            if meta.thread_id != thread_id:
+                continue
+            parsed.append((page_no, path, content, meta, turns))
+        if not parsed:
+            return False
+
+        last_page_no, last_path, last_content, last_meta, last_turns = parsed[-1]
+        entry = _ThreadEntry(
+            last_meta.model_copy(update={"page": 1, "prev": None}),
+            last_meta.created,
+            generate_thread_id_short(thread_id),
+        )
+        max_n = 0
+        for _, _, _, _, turns in parsed:
+            for t in turns:
+                max_n = max(max_n, t.turn_index)
+                self._slots.record(
+                    thread_id,
+                    SlotKey(t.turn_index, t.role),
+                    compute_content_hash(t.body),
+                    t.fidelity,
+                    len(t.body),
+                    turn_key=t.turn_key,
+                )
+                if t.role != "user":
+                    continue
+                if t.fidelity == Fidelity.STUB:
+                    self._gaps.register_gaps(thread_id, [t.turn_index])
+                    self._gaps.mark_requested(thread_id, t.turn_index)
+                    continue
+                if t.recovered:
+                    self._gaps.register_gaps(thread_id, [t.turn_index])
+                    self._gaps.recover(thread_id, t.turn_index)
+                # The header keeps only 40 chars of the anchor; rebuild it from the body
+                entry.anchor_map[t.turn_index] = normalise_anchor(t.body)
+
+        self._registry.register(thread_id, entry)
+        self._page_states[thread_id] = PageState(
+            thread_id=thread_id,
+            current_page=last_page_no,
+            current_bytes=len(last_content.encode("utf-8")),
+            current_turn_count=len(last_turns),
+            global_turn_index=max_n,
+            file_path=str(last_path),
+        )
+        return True
+
+    def _rehydrate(self, thread_id: str, account: str) -> bool:
+        """Load a thread written by an earlier process from its Markdown pages."""
+        if self._registry.exists(thread_id):
+            return True
+        acc_dir = self._account_dir(account)
+        if acc_dir is None or not thread_id:
+            return False
+        short = generate_thread_id_short(thread_id)
+        pattern = f"*/*/*_{glob.escape(short)}_*_p*.md"
+        pages: list[tuple[int, Path, str]] = []
+        for path in acc_dir.glob(pattern):
+            m = _PAGE_FILE_RE.search(path.name)
+            if not m:
+                continue
+            try:
+                pages.append((int(m.group(1)), path, path.read_text(encoding="utf-8")))
+            except OSError as e:
+                logger.warning("Cannot read %s during restore: %s", path, e)
+                return False
+        if not pages:
+            return False
+        restored = self.restore_thread_state(thread_id, pages)
+        if restored:
+            logger.info("Restored thread %s from %d page(s)", thread_id, len(pages))
+        return restored
+
+    def _load_account(self, account: str) -> None:
+        """Restore every thread of an account once per process (for find)."""
+        if account in self._loaded_accounts:
+            return
+        self._loaded_accounts.add(account)
+        acc_dir = self._account_dir(account)
+        if acc_dir is None:
+            return
+        for path in acc_dir.glob("*/*/*_p01.md"):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    m = _THREAD_ID_RE.search(f.read(4096))
+            except OSError:
+                continue
+            if m:
+                self._rehydrate(m.group(1), account)
 
     def _bind_thread(
         self,
@@ -480,7 +664,7 @@ class FileStore:
         account: str,
     ) -> tuple[str | None, str]:
         if thread_id:
-            if self._registry.exists(thread_id):
+            if self._registry.exists(thread_id) or self._rehydrate(thread_id, account):
                 return thread_id, "id"
             if thread_id in self._offloaded_threads:
                 return thread_id, "offloaded_id"
@@ -503,7 +687,9 @@ class FileStore:
                     return None, "new"
 
                 found = search_active_by_anchor(self._config, norm_anchor)
-                if found and self._registry.exists(found):
+                if found and (
+                    self._registry.exists(found) or self._rehydrate(found, account)
+                ):
                     return found, "anchor"
 
                 # Check offloaded candidates (§1 G7)
@@ -557,6 +743,7 @@ class FileStore:
         limit: int = 10,
         titles_only: bool = False,
     ) -> list[ThreadHit]:
+        self._load_account(account_id)
         results = []
         q_lower = (query or "").lower()
         for tid, entry in self._registry.all_entries().items():
@@ -597,6 +784,7 @@ class FileStore:
             total_turns=s.get("total_turns", 0),
             verbatim=fc.get("verbatim", 0),
             abridged=fc.get("abridged", 0),
+            reported=fc.get("reported", 0),
             truncated=fc.get("truncated", 0),
             stubs=fc.get("stub", 0),
             gaps_open=s.get("gaps_open", []),
@@ -620,6 +808,7 @@ class FileStore:
         fidelity_counts: dict[str, int] = {
             "verbatim": 0,
             "abridged": 0,
+            "reported": 0,
             "truncated": 0,
             "stub": 0,
             "open": 0,

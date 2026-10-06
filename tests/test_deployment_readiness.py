@@ -102,9 +102,9 @@ async def test_x8_latency_budget_p95_under_300ms(pg_store):
             }
 
             thread_id = None
+            next_turn = None
             # Benchmark 20 consecutive turn saves
             for i in range(1, 21):
-                prev_resp = f"Answer to query {i-1}" if i > 1 else None
                 prev_anc = f"Query number {i-1}" if i > 1 else None
 
                 call_req = {
@@ -112,12 +112,13 @@ async def test_x8_latency_budget_p95_under_300ms(pg_store):
                     "id": i + 10,
                     "method": "tools/call",
                     "params": {
-                        "name": "vault_save_turn",
+                        "name": "vault_log_turn",
                         "arguments": {
-                            "user_query": f"Query number {i}",
-                            "prev_response": prev_resp,
+                            "user_message": f"Query number {i}",
+                            "reply": f"Answer to query {i}",
                             "prev_user_anchor": prev_anc,
                             "thread_id": thread_id,
+                            "turn": next_turn,
                             "title_hint": "Benchmark Conversation",
                         },
                     },
@@ -136,6 +137,7 @@ async def test_x8_latency_budget_p95_under_300ms(pg_store):
                 assert turn_res["ok"] is True
                 if thread_id is None:
                     thread_id = turn_res["thread_id"]
+                next_turn = turn_res["next_turn"]
 
     latencies_sorted = sorted(latencies_ms)
     p95_index = int(len(latencies_sorted) * 0.95)

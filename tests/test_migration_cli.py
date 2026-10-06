@@ -9,10 +9,13 @@ Verifies:
 - CLI invocation via subprocess
 """
 
+import asyncio
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 import pytest
 
 from thread_save.cli.migrate import import_local_vault
@@ -23,7 +26,18 @@ from thread_save.storage.renderer import render_thread_markdown
 TEST_DSN = os.environ.get(
     "DATABASE_URL", "postgresql://postgres:@127.0.0.1:5432/thread_save_test"
 )
-FIXTURE_VAULT = Path("vault_rich_fixture")
+# Built fresh for this module: a checked-out folder could be stale or hold real data
+FIXTURE_VAULT = Path(tempfile.gettempdir()) / "tv_migration_fixture"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def rich_fixture_vault():
+    sys.path.insert(0, str(Path(__file__).parent))
+    from build_fsck_fixture import build_and_verify_fixture
+
+    assert asyncio.run(build_and_verify_fixture(FIXTURE_VAULT)) == 0
+    yield FIXTURE_VAULT
+    shutil.rmtree(FIXTURE_VAULT, ignore_errors=True)
 
 
 @pytest.fixture
@@ -161,7 +175,8 @@ async def test_migration_round_trip_renderer(clean_pg_store):
     )
 
     async with clean_pg_store.pool.acquire() as conn:
-        tid = await conn.fetchval("SELECT id FROM threads WHERE current_page = 3")
+        # the multi-page thread (its page count depends on page_max_turns/bytes)
+        tid = await conn.fetchval("SELECT id FROM threads WHERE current_page > 1")
 
     rendered_page1 = await render_thread_markdown(
         clean_pg_store,

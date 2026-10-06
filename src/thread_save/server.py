@@ -14,8 +14,10 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import sys
 import traceback
+from typing import Any
 
 # ── §7.3 stdio hygiene — BEFORE any other import ──────────────────────────
 _real_stdout = sys.stdout
@@ -30,9 +32,13 @@ logger = logging.getLogger("thread_save")
 
 # ── Now safe to import ────────────────────────────────────────────────────
 
-from mcp.server.mcpserver import MCPServer
 
-from thread_save.config import VaultConfig, load_config
+from thread_save.config import (
+    VaultConfig,
+    legacy_save_turn_enabled,
+    load_capture_mode,
+    load_config,
+)
 from thread_save.index.sqlite_index import ThreadIndex
 from thread_save.models import Fidelity
 from thread_save.service import TurnService
@@ -40,6 +46,16 @@ from thread_save.storage.formatter import extract_snippet
 from thread_save.storage.path_resolver import ensure_vault_structure
 from thread_save.storage.writer import FileStore
 from thread_save.telemetry.events import EventLogger, LatencyTimer
+from thread_save.tools.clients import ArchiveServer
+from thread_save.tools.descriptions import (
+    BACKFILL_DESC,
+    DEST_LOCAL,
+    LOCAL_TOOL_NAMES,
+    log_turn_description,
+    public_result,
+    server_instructions,
+    user_messages_only,
+)
 
 # Try to import ToolAnnotations; fall back gracefully (§2 note)
 try:
@@ -65,9 +81,35 @@ def _init() -> tuple[VaultConfig, TurnService, ThreadIndex, EventLogger]:
         _index = ThreadIndex(_config)
         _events = EventLogger(_config.events_path, _config.events_max_bytes)
         _service = TurnService(store, config=_config, events=_events)
+        _attach_file_log(_config)
         logger.info("ThreadVault initialised: %s", _config.vault_root)
     assert _service is not None and _index is not None and _events is not None
     return _config, _service, _index, _events
+
+
+_file_log_attached = False
+
+
+def _attach_file_log(config: VaultConfig) -> None:
+    """B6 L0: Claude Desktop does not keep a stdio server's stderr, so also log to the vault."""
+    global _file_log_attached
+    if _file_log_attached:
+        return
+    try:
+        handler = logging.handlers.RotatingFileHandler(
+            config.index_dir / "server.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+        logging.getLogger("thread_save").addHandler(handler)
+        _file_log_attached = True
+    except OSError as e:
+        logger.warning("Cannot open server.log: %s", e)
+
+
+def _log_failure(tool: str, code: str, **fields: Any) -> None:
+    """B6 L0: failed calls are recorded in events.jsonl too."""
+    if _events is not None:
+        _events.log(tool=tool, ok=False, code=code, **fields)
 
 
 # ── Opt-out phrase detection (§6.5) ───────────────────────────────────────
@@ -99,20 +141,111 @@ def _error_result(code: str, retryable: bool = False) -> dict:
 
 # ── MCP Server ─────────────────────────────────────────────────────────────
 
-# §6.2 — Server instructions
-_SERVER_INSTRUCTIONS = """\
-ThreadVault keeps a local markdown archive of this user's conversations, which they turned on \
-deliberately. At the start of each reply, call vault_save_turn as described in its tool \
-description. If the user asks not to archive a conversation, stop calling it for that conversation."""
+# B7 — Server instructions (echo-free, real destination)
+_SERVER_INSTRUCTIONS = server_instructions(DEST_LOCAL, LOCAL_TOOL_NAMES["log_turn"])
 
-mcp = MCPServer(
+mcp = ArchiveServer(
     "threadvault",
+    write_tools={LOCAL_TOOL_NAMES[k] for k in ("log_turn", "save_turn", "backfill")},
     version="0.2.0",
     instructions=_SERVER_INSTRUCTIONS,
 )
 
 
-# ── Tool 1: vault_save_turn (§2, §5) ──────────────────────────────────────
+# ── Tool 1: vault_log_turn (B7 path E) ────────────────────────────────────
+
+_CAPTURE = load_capture_mode()
+_LOG_TURN_DESC = log_turn_description(DEST_LOCAL, _CAPTURE)
+
+_log_turn_kwargs: dict = {"description": _LOG_TURN_DESC}
+if _HAS_ANNOTATIONS:
+    _log_turn_kwargs["annotations"] = ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+
+
+async def _log_turn(
+    user_message: str,
+    reply: str | None,
+    thread_id: str | None,
+    turn: int | None,
+    prev_user_anchor: str | None,
+    title_hint: str | None,
+) -> dict:
+    try:
+        config, service, index, events = _init()
+        timer = LatencyTimer()
+        with timer:
+            result = await service.log_turn(
+                user_message=user_message,
+                reply=reply,
+                thread_id=thread_id,
+                turn=turn,
+                prev_user_anchor=prev_user_anchor,
+                title_hint=title_hint,
+                account=config.default_account,
+            )
+
+        if result.get("ok") and result.get("action") == "write":
+            _index_queue.put((
+                index, result["thread_id"], result["n"], user_message,
+                reply if result.get("reply_fidelity") else None,
+                title_hint, service.thread_index_info(result["thread_id"]),
+            ))
+
+        events.log(
+            tool=LOCAL_TOOL_NAMES["log_turn"],
+            thread_id=result.get("thread_id"),
+            n=result.get("n"),
+            mode=config.capture.value,
+            binding=result.get("binding", "paused" if result.get("paused") else "unknown"),
+            gap_size=len(result.get("not_logged") or []),
+            fidelity=result.get("reply_fidelity") or "none",
+            content_bytes=result.get("bytes", 0),
+            latency_ms=timer.elapsed_ms,
+            ok=result.get("ok", True),
+            action=result.get("action", ""),
+        )
+        return public_result(result)
+
+    except Exception:
+        logger.error("vault_log_turn failed: %s", traceback.format_exc())
+        _log_failure(LOCAL_TOOL_NAMES["log_turn"], "write_failed", thread_id=thread_id)
+        return _error_result("write_failed", retryable=True)
+
+
+async def vault_log_turn(
+    user_message: str,
+    reply: str | None = None,
+    thread_id: str | None = None,
+    turn: int | None = None,
+    prev_user_anchor: str | None = None,
+    title_hint: str | None = None,
+) -> dict:
+    return await _log_turn(user_message, reply, thread_id, turn, prev_user_anchor, title_hint)
+
+
+async def vault_log_turn_user_only(
+    user_message: str,
+    thread_id: str | None = None,
+    turn: int | None = None,
+    prev_user_anchor: str | None = None,
+    title_hint: str | None = None,
+) -> dict:
+    return await _log_turn(user_message, None, thread_id, turn, prev_user_anchor, title_hint)
+
+
+# E-floor: in user_only mode the reply parameter is not part of the schema at all
+if _CAPTURE.value == "user_only":
+    mcp.tool(name=LOCAL_TOOL_NAMES["log_turn"], **_log_turn_kwargs)(vault_log_turn_user_only)
+else:
+    mcp.tool(name=LOCAL_TOOL_NAMES["log_turn"], **_log_turn_kwargs)(vault_log_turn)
+
+
+# ── Legacy: vault_save_turn (B1 §6.2 text; listed only with THREADVAULT_LEGACY_SAVE_TURN=on) ──
 
 # §6.2 — exact tool description
 _SAVE_TURN_DESC = """\
@@ -146,7 +279,6 @@ if _HAS_ANNOTATIONS:
     )
 
 
-@mcp.tool(**_save_turn_kwargs)
 async def vault_save_turn(
     user_query: str,
     thread_id: str | None = None,
@@ -181,17 +313,24 @@ async def vault_save_turn(
             )
 
         # Index turn in background (§I-2: off hot path)
-        if result.get("ok"):
-            _index_queue.put((index, result.get("thread_id", ""), result.get("n", 0), user_query, title_hint))
+        if result.get("ok") and result.get("n"):
+            tid = result.get("thread_id", "")
+            _index_queue.put((
+                index, tid, result["n"], user_query, None, title_hint,
+                service.thread_index_info(tid),
+            ))
 
-        # Telemetry
+        # Telemetry (binding from the result, not the argument: P2-13)
         events.log(
-            tool="vault_save_turn",
+            tool=LOCAL_TOOL_NAMES["save_turn"],
             thread_id=result.get("thread_id"),
             n=result.get("n"),
             mode=config.mode.value,
-            binding="new" if not thread_id else "id",
+            binding=result.get("binding", "paused" if result.get("paused") else "unknown"),
+            chunk=chunk_index is not None,
             fidelity=fidelity,
+            content_bytes=len(user_query.encode("utf-8"))
+            + len((prev_response or "").encode("utf-8")),
             latency_ms=timer.elapsed_ms,
             ok=result.get("ok", True),
             model_hint=model_hint or "",
@@ -203,15 +342,17 @@ async def vault_save_turn(
 
     except Exception as e:
         logger.error("vault_save_turn failed: %s", traceback.format_exc())
+        _log_failure(LOCAL_TOOL_NAMES["save_turn"], "write_failed", thread_id=thread_id)
         return _error_result("write_failed", retryable=True)
+
+
+if legacy_save_turn_enabled():
+    mcp.tool(name=LOCAL_TOOL_NAMES["save_turn"], **_save_turn_kwargs)(vault_save_turn)
 
 
 # ── Tool 2: vault_backfill (§5) ────────────────────────────────────────────
 
-_BACKFILL_DESC = """\
-Send earlier chat turns that vault_save_turn reported as missing. \
-Can also send the whole conversation when the user asks to save it. Up to 10 turns per call; send more in further \
-calls. Turns already archived are left unchanged, so resending is safe."""
+_BACKFILL_DESC = BACKFILL_DESC
 
 _backfill_kwargs: dict = {"description": _BACKFILL_DESC}
 if _HAS_ANNOTATIONS:
@@ -223,7 +364,7 @@ if _HAS_ANNOTATIONS:
     )
 
 
-@mcp.tool(**_backfill_kwargs)
+@mcp.tool(name=LOCAL_TOOL_NAMES["backfill"], **_backfill_kwargs)
 async def vault_backfill(
     thread_id: str,
     turns: list[dict],
@@ -235,12 +376,12 @@ async def vault_backfill(
         with timer:
             result = await service.backfill(
                 thread_id=thread_id,
-                turns=turns,
+                turns=user_messages_only(turns),
                 account=config.default_account,
             )
 
         events.log(
-            tool="vault_backfill",
+            tool=LOCAL_TOOL_NAMES["backfill"],
             thread_id=thread_id,
             recovered=len(result.get("stored", [])),
             latency_ms=timer.elapsed_ms,
@@ -252,6 +393,7 @@ async def vault_backfill(
 
     except Exception as e:
         logger.error("vault_backfill failed: %s", traceback.format_exc())
+        _log_failure(LOCAL_TOOL_NAMES["backfill"], "write_failed", thread_id=thread_id)
         return _error_result("write_failed", retryable=True)
 
 
@@ -269,7 +411,7 @@ if _HAS_ANNOTATIONS:
     )
 
 
-@mcp.tool(**_find_kwargs)
+@mcp.tool(name=LOCAL_TOOL_NAMES["find"], **_find_kwargs)
 async def vault_find(
     query: str | None = None,
     limit: int = 10,
@@ -335,7 +477,7 @@ async def vault_find(
             res["notice"] = "Envelope encryption enabled: searched thread titles only."
 
         events.log(
-            tool="vault_find",
+            tool=LOCAL_TOOL_NAMES["find"],
             latency_ms=timer.elapsed_ms,
             ok=True,
         )
@@ -361,7 +503,7 @@ if _HAS_ANNOTATIONS:
     )
 
 
-@mcp.tool(**_stats_kwargs)
+@mcp.tool(name=LOCAL_TOOL_NAMES["stats"], **_stats_kwargs)
 async def vault_stats(
     thread_id: str | None = None,
 ) -> dict:
@@ -405,23 +547,33 @@ def _do_index(
     index: ThreadIndex,
     thread_id: str,
     n: int,
-    user_query: str,
+    user_text: str,
+    reply_text: str | None,
     title_hint: str | None,
+    info: dict,
 ) -> None:
-    """Best-effort FTS indexing. Never blocks the hot path."""
+    """Best-effort FTS indexing. Never blocks the hot path.
+
+    Uses the thread's real title/account/path; an empty title_hint must not
+    overwrite the title of an existing thread (P2-12).
+    """
     try:
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
-        index.upsert_thread(
-            thread_id=thread_id,
-            title=title_hint or "",
-            slug="",
-            account="",
-            path="",
-            created=now,
-            updated=now,
-        )
-        index.index_turn(thread_id, n, "user", user_query)
+        title = info.get("title") or title_hint or ""
+        if title:
+            index.upsert_thread(
+                thread_id=thread_id,
+                title=title,
+                slug=info.get("slug", ""),
+                account=info.get("account", ""),
+                path=info.get("path", ""),
+                created=info.get("created") or now,
+                updated=info.get("updated") or now,
+            )
+        index.index_turn(thread_id, n, "user", user_text, title=title)
+        if reply_text:
+            index.index_turn(thread_id, n, "assistant", reply_text, title=title)
     except Exception:
         pass
 
@@ -431,6 +583,13 @@ def _do_index(
 def main():
     """Run the MCP server over stdio."""
     sys.stdout = _real_stdout
+    # P1-14: log from startup, so which client connected is in server.log before any save
+    try:
+        config = load_config()
+        ensure_vault_structure(config)
+        _attach_file_log(config)
+    except Exception as e:
+        logger.warning("server.log not attached at startup: %s", e)
     logger.info("ThreadVault MCP server starting (v0.2.0)...")
     mcp.run(transport="stdio")
 

@@ -153,7 +153,8 @@ FIDELITY_NAMES = {
     1: "stub",
     2: "truncated",
     3: "abridged",
-    4: "verbatim",
+    4: "reported",
+    5: "verbatim",
 }
 
 

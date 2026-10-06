@@ -16,6 +16,7 @@ import pytest
 
 from thread_save.server import (
     _SERVER_INSTRUCTIONS as STDIO_SERVER_INSTRUCTIONS,
+    _LOG_TURN_DESC as STDIO_LOG_TURN_DESC,
     _SAVE_TURN_DESC as STDIO_SAVE_TURN_DESC,
     _BACKFILL_DESC as STDIO_BACKFILL_DESC,
     _FIND_DESC as STDIO_FIND_DESC,
@@ -23,6 +24,7 @@ from thread_save.server import (
 )
 from thread_save.web.mcp_server import (
     _SERVER_INSTRUCTIONS as HTTP_SERVER_INSTRUCTIONS,
+    _LOG_TURN_DESC as HTTP_LOG_TURN_DESC,
     _SAVE_TURN_DESC as HTTP_SAVE_TURN_DESC,
     _BACKFILL_DESC as HTTP_BACKFILL_DESC,
     _FIND_DESC as HTTP_FIND_DESC,
@@ -58,6 +60,7 @@ def test_d0_no_aggressive_words_in_stdio_instructions_and_tools():
     """Verify stdio server instructions and tool descriptions contain no forbidden terms."""
     targets = {
         "stdio server instructions": STDIO_SERVER_INSTRUCTIONS,
+        "stdio vault_log_turn": STDIO_LOG_TURN_DESC,
         "stdio vault_save_turn": STDIO_SAVE_TURN_DESC,
         "stdio vault_backfill": STDIO_BACKFILL_DESC,
         "stdio vault_find": STDIO_FIND_DESC,
@@ -73,6 +76,7 @@ def test_d0_no_aggressive_words_in_http_instructions_and_tools():
     """Verify HTTP server instructions and tool descriptions contain no forbidden terms."""
     targets = {
         "HTTP server instructions": HTTP_SERVER_INSTRUCTIONS,
+        "HTTP vault_log_turn": HTTP_LOG_TURN_DESC,
         "HTTP vault_save_turn": HTTP_SAVE_TURN_DESC,
         "HTTP vault_backfill": HTTP_BACKFILL_DESC,
         "HTTP vault_find": HTTP_FIND_DESC,
@@ -106,12 +110,14 @@ def extract_first_sentence(text: str) -> str:
 
 
 def test_d1_tool_description_openings_under_80_chars():
-    """Verify first sentence of each tool description is <= 80 chars and save_turn contains 'every reply'."""
+    """Verify first sentence of each tool description is <= 80 chars and the turn tools say when to call."""
     tools = {
+        "stdio vault_log_turn": STDIO_LOG_TURN_DESC,
         "stdio vault_save_turn": STDIO_SAVE_TURN_DESC,
         "stdio vault_backfill": STDIO_BACKFILL_DESC,
         "stdio vault_find": STDIO_FIND_DESC,
         "stdio vault_stats": STDIO_STATS_DESC,
+        "HTTP vault_log_turn": HTTP_LOG_TURN_DESC,
         "HTTP vault_save_turn": HTTP_SAVE_TURN_DESC,
         "HTTP vault_backfill": HTTP_BACKFILL_DESC,
         "HTTP vault_find": HTTP_FIND_DESC,
@@ -126,5 +132,9 @@ def test_d1_tool_description_openings_under_80_chars():
         if "vault_save_turn" in name:
             assert "every reply" in first_sentence, (
                 f"{name} first sentence must contain 'every reply': '{first_sentence}'"
+            )
+        if "vault_log_turn" in name:
+            assert "after finishing each reply" in first_sentence, (
+                f"{name} first sentence must say when to call: '{first_sentence}'"
             )
 
