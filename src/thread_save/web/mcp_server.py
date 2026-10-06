@@ -25,6 +25,7 @@ from thread_save.tools.descriptions import (
     BACKFILL_DESC,
     DEST_REMOTE,
     REMOTE_TOOL_NAMES,
+    LAST_REPLY_FIELD_DESC,
     REPLY_FIELD_DESC,
     log_turn_description,
     public_result,
@@ -118,6 +119,7 @@ def create_http_mcp_server(service: TurnService) -> ArchiveServer:
         turn: int | None,
         prev_user_anchor: str | None,
         title_hint: str | None,
+        last_reply: str | None = None,
     ) -> dict:
         account = current_account_id.get()
         try:
@@ -130,12 +132,13 @@ def create_http_mcp_server(service: TurnService) -> ArchiveServer:
                 title_hint=title_hint,
                 account=account,
                 client="remote",
+                last_reply=last_reply,
             )
             # P1-15 measurement: is the logged reply formatted or a flattened retelling?
             logger.info(
-                "vault_log_turn n=%s action=%s reply_fidelity=%s reply_shape=%s",
+                "vault_log_turn n=%s action=%s reply_fidelity=%s reply_shape=%s recovered_reply=%s",
                 result.get("n"), result.get("action"),
-                result.get("reply_fidelity"), result.get("reply_shape"),
+                result.get("reply_fidelity"), result.get("reply_shape"), result.get("recovered_reply"),
             )
             return public_result(result, REMOTE_TOOL_NAMES["log_turn"])
         except Exception as e:
@@ -149,8 +152,9 @@ def create_http_mcp_server(service: TurnService) -> ArchiveServer:
         turn: int | None = None,
         prev_user_anchor: str | None = None,
         title_hint: str | None = None,
+        last_reply: Annotated[str | None, Field(description=LAST_REPLY_FIELD_DESC)] = None,
     ) -> dict:
-        return await _log_turn(user_message, reply, thread_id, turn, prev_user_anchor, title_hint)
+        return await _log_turn(user_message, reply, thread_id, turn, prev_user_anchor, title_hint, last_reply)
 
     async def vault_log_turn_user_only(
         user_message: str,

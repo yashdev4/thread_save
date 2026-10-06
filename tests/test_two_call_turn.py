@@ -188,12 +188,47 @@ async def test_copied_anchor_with_small_differences_is_not_a_gap(vault):
         tid = e1["thread_id"]
 
 
+@pytest.mark.asyncio
+async def test_skipped_end_call_is_filled_by_the_next_start_call(vault):
+    """E8-7: every call 1 carries the reply of the turn before; it fills a skipped call 2."""
+    svc = _svc(vault)
+    s1, _ = await _reply_turn(svc, MSGS[0], None, skip_end=True)
+    tid = s1["thread_id"]
+    s2 = await svc.log_turn(user_message=MSGS[1], thread_id=tid, turn=s1["n"] + 1,
+                            prev_user_anchor=MSGS[0], last_reply="## Answer 1\n- step")
+    assert (s2["n"], s2["recovered_reply"], s2["not_logged"]) == (2, 1, [])
+    slots = _slots(vault)
+    assert slots[(1, "assistant")] == ("reported", "## Answer 1\n- step")
+    assert (2, "assistant") not in slots
+
+
+@pytest.mark.asyncio
+async def test_last_reply_never_overwrites_a_logged_reply(vault):
+    svc = _svc(vault)
+    _, e1 = await _reply_turn(svc, MSGS[0], "a1")
+    s2 = await svc.log_turn(user_message=MSGS[1], thread_id=e1["thread_id"], turn=e1["next_turn"],
+                            prev_user_anchor=MSGS[0], last_reply="something else")
+    assert s2["recovered_reply"] is None
+    assert _slots(vault)[(1, "assistant")][1] == "a1"
+
+
+@pytest.mark.asyncio
+async def test_last_reply_is_dropped_in_user_only_mode(vault):
+    svc = _svc(vault, capture=CaptureMode.USER_ONLY)
+    r1 = await svc.log_turn(user_message=MSGS[0])
+    r2 = await svc.log_turn(user_message=MSGS[1], thread_id=r1["thread_id"], turn=r1["next_turn"],
+                            prev_user_anchor=MSGS[0], last_reply="a1")
+    assert r2["recovered_reply"] is None
+    assert all(role == "user" for (_, role) in _slots(vault))
+
+
 def test_results_name_the_next_step():
     start = {"ok": True, "thread_id": "T", "n": 3, "next_turn": 4, "awaiting_reply": True,
              "action": "write"}
     assert public_result(start, "vault_local_log_turn") == {
         "ok": True, "thread_id": "T", "turn": 3,
-        "then": "After your reply, call vault_local_log_turn with turn=3 and reply.",
+        "then": "This turn is archived without your reply until you call vault_local_log_turn "
+                "with turn=3 and reply, as the last step of this reply.",
     }
     end = {**start, "awaiting_reply": False}
     assert public_result(end) == {"ok": True, "thread_id": "T", "next_turn": 4}

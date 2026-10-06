@@ -54,6 +54,7 @@ from thread_save.tools.descriptions import (
     BACKFILL_DESC,
     DEST_LOCAL,
     LOCAL_TOOL_NAMES,
+    LAST_REPLY_FIELD_DESC,
     REPLY_FIELD_DESC,
     log_turn_description,
     public_result,
@@ -178,6 +179,7 @@ async def _log_turn(
     turn: int | None,
     prev_user_anchor: str | None,
     title_hint: str | None,
+    last_reply: str | None = None,
 ) -> dict:
     try:
         config, service, index, events = _init()
@@ -191,6 +193,7 @@ async def _log_turn(
                 prev_user_anchor=prev_user_anchor,
                 title_hint=title_hint,
                 account=config.default_account,
+                last_reply=last_reply,
             )
 
         if result.get("ok") and result.get("action") in ("write", "merge"):
@@ -231,8 +234,9 @@ async def vault_log_turn(
     turn: int | None = None,
     prev_user_anchor: str | None = None,
     title_hint: str | None = None,
+    last_reply: Annotated[str | None, Field(description=LAST_REPLY_FIELD_DESC)] = None,
 ) -> dict:
-    return await _log_turn(user_message, reply, thread_id, turn, prev_user_anchor, title_hint)
+    return await _log_turn(user_message, reply, thread_id, turn, prev_user_anchor, title_hint, last_reply)
 
 
 async def vault_log_turn_user_only(

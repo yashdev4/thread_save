@@ -71,7 +71,7 @@ Claude Desktop runs the stdio server (`claude_desktop_config.json` → `threadva
 `log_turn` writes gap stubs only when `turn` is ahead of `highest + 1` (`service.py` `log_turn`, the `gap_ns` branch). The model passes back the `next_turn` it was given, so when a call is skipped, the next call carries the expected number. The skipped turn disappears and the next message takes its number. `prev_user_anchor` would reveal the skip, since it names a message the server never stored, but it is used only for binding and E2b. Probe: 4-turn chat with turn 3 skipped → stored t1, t2, then message 4 as t3; no stub, no gap. The old `save_turn` protocol fails worse: reply 3 is stored under message 2. → B7 E5/E8-3, B1 storage evaluation
 
 ### P1-16 · The save tool is no longer called on every reply — Verified (regression), mechanism Inferred
-**Status 2026-10-06: fix built (B7 E8), uncommitted and not deployed; needs the E8-5 live run.**
+**Status 2026-10-06: E8 deployed (`ab5ab9d`); the owner reports the end call is still skipped. E8-6 `missed_reply` catch-up built, uncommitted and untested; the last turn of a chat stays uncovered.**
 Since path E (`bad9e0c`, deployed `ad9b812`), the model is told to call the tool **after** each reply. The owner reports it fires only when they name the connector. Under the old start-of-reply trigger (2026-10-05), every chat opened with an unprompted `n=1` call and numbering ran unbroken. Chat `mt8f50` (2026-10-06) began only on the user's explicit request. Separate defect: a first call made mid-chat is numbered turn 1, so `vault_local_backfill` had no earlier slots and stored nothing. → B7 E8, B1
 
 ### P1-15 · Logged replies are condensed one-line retellings, not the reply as shown — Verified

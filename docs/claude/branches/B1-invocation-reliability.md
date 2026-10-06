@@ -102,6 +102,8 @@ The old design called reliably but stored wrongly. The current design stores cor
 8. ◐ Invocation rate fell after the move to end-of-reply (P1-16). B7 E8 built 2026-10-06 (uncommitted): start call + end call, results name the next step, skipped turns stubbed (P1-17). Needs the E8-5 live run.
 
 ## Change log (newest first)
+- 2026-10-06 · REVISED · §6.2: every start call carries the turn-before reply (`last_reply`, B7 E8-7); the end call is still asked for as the final action. Owner dropped the safeguard constraint. Uncommitted, untested.
+- 2026-10-06 · ADDED · §6.2: the end call is still skipped live, so call 1 now carries `missed_reply` for a turn whose call 2 never came (B7 E8-6). Uncommitted, untested.
 - 2026-10-06 · REPLACED · §6.2: `vault_log_turn` is asked for at the start of each reply, plus a second call after the reply in `full` capture (B7 E8). The first sentence is now "Call at the start of each reply and again after it to archive this chat turn." The D1 test was changed to match. Uncommitted.
 - 2026-10-06 · ADDED · Storage evaluation of turn-start vs end-of-reply vs two-beat (probe on FileStore). Old 65, current 59, two-beat 83. Found P1-17: a skipped `vault_log_turn` call loses the turn silently.
 - 2026-10-06 · FOUND · P1-16: since `vault_log_turn` moved the call to after the reply, it no longer fires every turn; start-of-reply calls had run unbroken. Fix proposed in B7 E8; §6.2 wording will change if E8-1 is approved.

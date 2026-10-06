@@ -1,9 +1,10 @@
 """Model-facing text shared by the stdio and remote servers (B7 path E).
 
 Rules enforced by tests/test_echo_free_protocol.py:
-- the model is never asked for earlier output of its own (no previous replies,
-  no whole-chat resends, no chunking to avoid shortening);
-- the reply is sent once, right after it is written, and only in `full` capture;
+- no whole-chat resends and no chunking;
+- in `full` capture the reply is sent right after it is written (call 2) and once
+  more with the next turn's first call (`last_reply`, E8-7: owner chose capture of
+  every reply over the safeguard concern, 2026-10-06), never more than that;
 - each reply starts with a call carrying the user's message only (B7 E8: the call
   at the start of a reply is the one models make reliably), and in `full` capture
   a second call after the reply adds the reply to the same turn;
@@ -46,9 +47,9 @@ def server_instructions(
         when = f"At the start of each reply, call {log_tool} with the user's message. "
     else:
         when = (
-            f"At the start of each reply, call {log_tool} with the user's message. "
-            "After the reply is written, call it again with the reply and the turn number "
-            "the first call returned. "
+            f"At the start of each reply, call {log_tool} with the user's message and your "
+            "reply from the turn before. After the reply is written, as the final action, "
+            "call it again with this reply and the turn number the first call returned. "
         )
     return (
         f"ThreadVault keeps an archive of this user's conversations {destination}, which they "
@@ -63,6 +64,15 @@ def server_instructions(
 REPLY_FIELD_DESC = (
     "Your full reply from this turn as Markdown, with the same headings, lists, tables, "
     "code blocks and line breaks the user sees. Not a summary or a description of it."
+)
+
+
+# E8-7: the end call is the one models skip; the start call is reliable. The reply
+# of the turn before rides on every start call, so it is stored even when call 2
+# was skipped. The server keeps the call 2 copy when it has one.
+LAST_REPLY_FIELD_DESC = (
+    "Your full reply from the turn before this one, as Markdown, exactly as the user saw it. "
+    "Send it on every call 1 after the first turn, even when call 2 was made."
 )
 
 
@@ -90,12 +100,15 @@ def log_turn_description(destination: str, capture: CaptureMode, reply_max_chars
             "\n"
             "Each reply has two calls:\n"
             "1. At the start, before writing anything: user_message, thread_id, turn, "
-            "prev_user_anchor (title_hint on the first turn). No reply.\n"
-            "2. As the last step, after the reply is written: the same fields, with turn set to "
-            "the turn returned by call 1, plus reply.\n"
+            "prev_user_anchor and last_reply (title_hint on the first turn). No reply.\n"
+            "2. As the last step of every reply, short ones included, after the reply is written: "
+            "the same fields, with turn set to the turn returned by call 1, plus reply.\n"
+            "Make call 2 for every reply, as the final action, after your last line of text.\n"
             "\n"
             "- user_message: the user's latest message, as written.\n"
             f"- reply (call 2 only): {REPLY_FIELD_DESC[0].lower()}{REPLY_FIELD_DESC[1:]}\n"
+            f"- last_reply (call 1 only, omit on the first turn): "
+            f"{LAST_REPLY_FIELD_DESC[0].lower()}{LAST_REPLY_FIELD_DESC[1:]}\n"
             "- thread_id: the thread_id from the last result. Omit on the first turn.\n"
             "- turn: call 1 sends next_turn from the last result; call 2 sends the turn from "
             "call 1's result. Omit on the first turn of a new chat; if the chat already has "
@@ -105,7 +118,7 @@ def log_turn_description(destination: str, capture: CaptureMode, reply_max_chars
             "- title_hint: a short descriptive title, first turn only.\n"
             "\n"
             "If a message contains passwords, API keys or similar secrets, replace them with [REDACTED].\n"
-            f"Send the whole reply once; the server keeps up to {reply_max_chars:,} characters.\n"
+            f"Send whole replies; the server keeps up to {reply_max_chars:,} characters of each.\n"
         )
     text += (
         "If the user asks not to archive this conversation, stop calling this tool for the rest of it.\n"
@@ -133,7 +146,10 @@ def public_result(result: dict, log_tool: str = "vault_log_turn") -> dict:
         n = result["n"]
         public.pop("next_turn", None)
         public["turn"] = n
-        public["then"] = f"After your reply, call {log_tool} with turn={n} and reply."
+        public["then"] = (
+            f"This turn is archived without your reply until you call {log_tool} with "
+            f"turn={n} and reply, as the last step of this reply."
+        )
     return public
 
 

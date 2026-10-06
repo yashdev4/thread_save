@@ -107,7 +107,7 @@ def test_tool_set_and_schema_shape(transport, capture):
     props = set(tools[names["log_turn"]]["schema"]["properties"])
     expected = {"user_message", "thread_id", "turn", "prev_user_anchor", "title_hint"}
     if capture == "full":
-        expected.add("reply")
+        expected |= {"reply", "last_reply"}
     assert props == expected  # E-floor: user_only cannot even carry a reply
 
 

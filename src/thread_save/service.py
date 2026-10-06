@@ -527,8 +527,14 @@ class TurnService:
         model_hint: str = "",
         account: str | None = None,
         client: str = "claude-desktop",
+        last_reply: str | None = None,
     ) -> dict:
         """Archive one complete turn after the reply is written (B7 path E).
+
+        last_reply (E8-7): the end call is the one models skip, the start call is
+        reliable. Every start call carries the reply of the turn before, which
+        fills the latest turn's reply when call 2 never came. A reply stored by
+        call 2 is kept as it is.
 
         One call writes (n, user) and (n, assistant) in one transaction. The model
         is never asked for earlier output: the server issues thread_id and
@@ -551,6 +557,9 @@ class TurnService:
         # E-floor: in user_only mode nothing the model wrote is stored
         if self._config.capture == CaptureMode.USER_ONLY:
             reply = None
+            last_reply = None
+        if last_reply is not None and not last_reply.strip():
+            last_reply = None
 
         # Content limits. User text keeps the global cap; the reply has the
         # smaller echo budget (E-budget) and is never claimed verbatim (E-truth).
@@ -576,12 +585,21 @@ class TurnService:
         )
         user_anchor = normalise_anchor(user_message)
 
+        last_fidelity: Fidelity | None = None
+        if last_reply is not None:
+            last_fidelity = classify_reply(last_reply)
+            if len(last_reply) > self._config.reply_max_chars:
+                last_reply = last_reply[: self._config.reply_max_chars]
+                last_fidelity = Fidelity.TRUNCATED
+
         if self._config.redaction_enabled:
             user_stored = redact_text(user_message).text
             reply_stored = redact_text(reply).text if reply is not None else None
+            last_stored = redact_text(last_reply).text if last_reply is not None else None
         else:
             user_stored = user_message
             reply_stored = reply
+            last_stored = last_reply
 
         bind_res = await self._store.bind_thread(account, thread_id, prev_user_anchor)
         bound_id = bind_res.thread_id
@@ -607,6 +625,7 @@ class TurnService:
 
         gap_ns: list[int] = []
         action = "no_op"
+        recovered_reply_n: int | None = None
         async with self._store.thread_txn(account, bound_id) as txn:
             slots = await txn.load_slots()
             existing_n = slots.find_turn_key(bound_id, turn_key)
@@ -651,6 +670,25 @@ class TurnService:
                         Stub(n=g, anchor=normalise_anchor(prev_user_anchor or "") if g == n - 1 else "")
                         for g in gap_ns
                     ])
+                elif last_stored is not None and last_fidelity is not None and highest >= 1:
+                    # E8-7: this start call carries the latest turn's reply. It fills
+                    # the slot only when call 2 was skipped; call 2's copy is kept.
+                    user_slot = slots.get(bound_id, SlotKey(highest, "user"))
+                    reply_slot = slots.get(bound_id, SlotKey(highest, "assistant"))
+                    if (
+                        user_slot is not None
+                        and user_slot.fidelity != Fidelity.STUB
+                        and (reply_slot is None or reply_slot.fidelity in (Fidelity.OPEN, Fidelity.STUB))
+                    ):
+                        res = await txn.upsert_turn(
+                            n=highest,
+                            role="assistant",
+                            body=last_stored,
+                            fidelity=last_fidelity,
+                            model=model_hint,
+                        )
+                        if res.action != "no_op":
+                            recovered_reply_n = highest
 
                 await txn.upsert_turn(
                     n=n,
@@ -685,6 +723,7 @@ class TurnService:
             "binding": binding,
             "action": action,
             "not_logged": gap_ns,
+            "recovered_reply": recovered_reply_n,
             # E8: call 1 of a reply (full capture, no reply yet) gets back its turn
             "awaiting_reply": reply is None and self._config.capture == CaptureMode.FULL,
             "reply_fidelity": reply_fidelity.value if reply_fidelity else None,
