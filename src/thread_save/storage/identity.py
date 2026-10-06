@@ -17,6 +17,7 @@ import ulid
 import json
 import os
 import unicodedata
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -48,6 +49,28 @@ def normalise_anchor(text: str, max_chars: int = 80) -> str:
     text = " ".join(text.split())
     text = text.strip().lower()
     return text[:max_chars]
+
+
+# How loosely a model-copied message opening may match the stored one (E8-3)
+ANCHOR_PREFIX_MIN = 16
+ANCHOR_SIMILARITY = 0.8
+
+
+def anchors_agree(sent: str, stored: str) -> bool:
+    """Does a model-sent message opening name the stored user message?
+
+    The model copies "the first 80 characters" of a message it read earlier, so
+    small differences (cut short, a typo, changed punctuation) still count.
+    """
+    a, b = normalise_anchor(sent), normalise_anchor(stored)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    shorter = min(len(a), len(b))
+    if shorter >= ANCHOR_PREFIX_MIN and (a.startswith(b) or b.startswith(a)):
+        return True
+    return SequenceMatcher(None, a, b).ratio() >= ANCHOR_SIMILARITY
 
 
 # ── Active Threads Registry (read-only list, NOT a binding fallback) ──────

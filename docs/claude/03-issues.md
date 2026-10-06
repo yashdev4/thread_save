@@ -66,6 +66,28 @@ In chat `6z3t53`, turns 9–10 of `prev_response` are bracketed descriptions of 
 **Status 2026-10-06: fixed, deployed 2026-10-06 (`bad9e0c`, live with `ad9b812`).**
 Claude Desktop runs the stdio server (`claude_desktop_config.json` → `threadvault-local`) next to the claude.ai connector. Both listed `vault_save_turn` / `vault_find` / …. On 2026-10-06 00:21–00:37 IST, four chats the owner ran "with the deployed connector" were all written by the **local** process: `vault_local/_index/events.jsonl` (stdio-only telemetry), account `dhanshree` (stdio env only). The deployed server received none of them (`vault_find` on it: 1 thread, "Greeting", 01:06 IST). **Fix:** the stdio server now lists `vault_local_log_turn`, `vault_local_backfill`, `vault_local_find`, `vault_local_stats` (and `vault_local_save_turn` under the legacy flag); the remote keeps `vault_*`. `tests/test_echo_free_protocol.py::test_local_and_deployed_tool_names_never_overlap`. A Render server cannot write to this computer; the local copy of deployed chats is pulled from the GitHub mirror by `scripts/pull_remote_vault.ps1` into `vault_rich_fixture/` (owner's chosen folder; the test fixture moved to `vault_test_fixture/` because `tests/build_fsck_fixture.py` deletes and rebuilds its folder). → B1 I-4, B4, B5
 
+### P1-18 · Turns of one chat land in new files when a call loses its thread_id — Verified (deployed mirror)
+**Status 2026-10-06: fixed in the working tree, uncommitted.**
+Deployed mirror `yashdev4/thread_vault`, 2026-10-06 16:49–17:10 UTC: 7 new threads, mostly one turn each, from a few chats. Examples:
+- `…EGEHD3` stores "more" as turn 2 of a new file, with the earlier message as a stub.
+- `…6XZG8E` stores "this one" as turn 3 behind two stubs.
+- `…DKNRWE` pairs the user text "save this chat" with an Odoo answer.
+
+Cause: FileStore `_bind_thread` opens a new thread whenever `thread_id` is missing or not found, unless `prev_user_anchor` matches a stored anchor **exactly**. In practice the model:
+- drops the 26-character id (the description said "Omit on the first turn", which reads as covering call 2 of turn 1 too);
+- mistypes it;
+- or retypes the opening words (e.g. "prority" → "priority").
+
+Fix:
+- Results name the id in words: call 1 `then` includes `thread_id=…`, and call 2 returns `next`: "At the start of your next reply, call … with thread_id=… and turn=…".
+- The description says only the chat's very first call omits `thread_id`.
+- FileStore recovers the thread (`id_fuzzy`): same last 6 characters, or ≤ 2 differing characters.
+- FileStore recovers by recent activity (`recent`): a thread of the account active in the last 6 h whose latest user message loosely matches `prev_user_anchor` (`identity.anchors_agree`), or, for a call carrying a reply, equals `user_message` with no reply stored yet. Only a single match binds, and a first call of a new chat never joins an old one.
+- The remote log line now shows `binding` and `sent_thread_id`.
+- PgStore accepts the new argument but has no recovery yet.
+
+Tests: `test_two_call_turn.py` (+5; the 3 recovery tests fail with recovery off). → B3, B7
+
 ### P1-17 · A skipped `vault_log_turn` call loses the turn without a stub — Verified (probe)
 **Status 2026-10-06: fixed in the working tree (B7 E8-3, `_skipped_turn`; `tests/test_two_call_turn.py`); deployed server still affected.**
 `log_turn` writes gap stubs only when `turn` is ahead of `highest + 1` (`service.py` `log_turn`, the `gap_ns` branch). The model passes back the `next_turn` it was given, so when a call is skipped, the next call carries the expected number. The skipped turn disappears and the next message takes its number. `prev_user_anchor` would reveal the skip, since it names a message the server never stored, but it is used only for binding and E2b. Probe: 4-turn chat with turn 3 skipped → stored t1, t2, then message 4 as t3; no stub, no gap. The old `save_turn` protocol fails worse: reply 3 is stored under message 2. → B7 E5/E8-3, B1 storage evaluation

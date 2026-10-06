@@ -146,10 +146,12 @@ def test_call_at_the_start_of_each_reply(transport, capture):
     log_name = NAMES[transport]["log_turn"]
     desc = next(t["description"] for t in surface["tools"] if t["name"] == log_name)
     instr = surface["instructions"]
-    assert f"At the start of each reply, call {log_name} with the user's message." in instr
+    assert f"At the start of each reply, call {log_name} with the user's message" in instr
     assert desc.startswith("Call at the start of each reply")
     if capture == "full":
-        assert "call it again with the reply" in instr
+        # E8-7: call 1 also carries the reply from the turn before (last_reply)
+        assert "your reply from the turn before" in instr
+        assert "as the final action, call it again with this reply" in instr
         assert "Each reply has two calls" in desc and "turn returned by call 1" in desc
     else:
         assert "again" not in instr and "again" not in desc

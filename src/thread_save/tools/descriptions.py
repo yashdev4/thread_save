@@ -109,7 +109,8 @@ def log_turn_description(destination: str, capture: CaptureMode, reply_max_chars
             f"- reply (call 2 only): {REPLY_FIELD_DESC[0].lower()}{REPLY_FIELD_DESC[1:]}\n"
             f"- last_reply (call 1 only, omit on the first turn): "
             f"{LAST_REPLY_FIELD_DESC[0].lower()}{LAST_REPLY_FIELD_DESC[1:]}\n"
-            "- thread_id: the thread_id from the last result. Omit on the first turn.\n"
+            "- thread_id: the thread_id from the last result, on every call except the very "
+            "first call of the chat (call 2 of the first turn sends it too).\n"
             "- turn: call 1 sends next_turn from the last result; call 2 sends the turn from "
             "call 1's result. Omit on the first turn of a new chat; if the chat already has "
             "earlier messages, send this message's number (the count of the user's messages so far, this one included).\n"
@@ -148,7 +149,13 @@ def public_result(result: dict, log_tool: str = "vault_log_turn") -> dict:
         public["turn"] = n
         public["then"] = (
             f"This turn is archived without your reply until you call {log_tool} with "
-            f"turn={n} and reply, as the last step of this reply."
+            f"thread_id={result['thread_id']}, turn={n} and reply, as the last step of this reply."
+        )
+    elif result.get("ok") and result.get("thread_id") and "next_turn" in result:
+        # P1-18: the id the next reply needs, in words, at the end of this turn
+        public["next"] = (
+            f"At the start of your next reply, call {log_tool} with "
+            f"thread_id={result['thread_id']} and turn={result['next_turn']}."
         )
     return public
 

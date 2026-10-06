@@ -482,6 +482,7 @@ class PgStore:
         account_id: str,
         thread_id: str | None,
         anchor: str | None,
+        user_message: str | None = None,
     ) -> BindResult:
         async with self.pool.acquire() as conn:
             acc_uuid = await self.resolve_account_uuid(conn, account_id)

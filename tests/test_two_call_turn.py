@@ -228,10 +228,13 @@ def test_results_name_the_next_step():
     assert public_result(start, "vault_local_log_turn") == {
         "ok": True, "thread_id": "T", "turn": 3,
         "then": "This turn is archived without your reply until you call vault_local_log_turn "
-                "with turn=3 and reply, as the last step of this reply.",
+                "with thread_id=T, turn=3 and reply, as the last step of this reply.",
     }
     end = {**start, "awaiting_reply": False}
-    assert public_result(end) == {"ok": True, "thread_id": "T", "next_turn": 4}
+    assert public_result(end) == {
+        "ok": True, "thread_id": "T", "next_turn": 4,
+        "next": "At the start of your next reply, call vault_log_turn with thread_id=T and turn=4.",
+    }
 
 
 @pytest.mark.asyncio
@@ -285,3 +288,58 @@ async def test_pg_two_calls_with_a_skipped_reply_and_a_mid_chat_start(pg_store):
         assert {(r["n"], r["role"]) for r in rows} >= {(3, "assistant")}
         violations, _ = await check_pg_fsck_conn(conn)
         assert violations == []
+
+
+# ── P1-18: a call that lost its thread_id continues the chat's file ───────
+
+def _files(vault):
+    return sorted(p.name for p in vault.rglob("*_p[0-9][0-9].md"))
+
+
+@pytest.mark.asyncio
+async def test_end_call_of_the_first_turn_without_thread_id_stays_in_the_same_file(vault):
+    svc = _svc(vault)
+    start = await svc.log_turn(user_message=MSGS[0])
+    end = await svc.log_turn(user_message=MSGS[0], reply="a1", turn=start["n"])
+    assert (end["thread_id"], end["n"], end["action"], end["binding"]) == (start["thread_id"], 1, "merge", "recent")
+    assert len(_files(vault)) == 1
+
+
+@pytest.mark.asyncio
+async def test_next_turn_without_thread_id_and_a_retyped_anchor_stays_in_the_same_file(vault):
+    svc = _svc(vault)
+    _, e1 = await _reply_turn(svc, "can u tell me about the prority projects present in odoo board", "list")
+    # The model drops the id and corrects the typo when copying the opening words
+    s2 = await svc.log_turn(user_message="more", turn=e1["next_turn"],
+                            prev_user_anchor="can u tell me about the priority projects present in odoo board")
+    assert (s2["thread_id"], s2["n"], s2["binding"], s2["not_logged"]) == (e1["thread_id"], 2, "recent", [])
+    assert len(_files(vault)) == 1
+
+
+@pytest.mark.asyncio
+async def test_mangled_thread_id_is_recovered(vault):
+    svc = _svc(vault)
+    _, e1 = await _reply_turn(svc, MSGS[0], "a1")
+    tid = e1["thread_id"]
+    wrong = tid[:5] + ("A" if tid[5] != "A" else "B") + tid[6:]
+    s2 = await svc.log_turn(user_message=MSGS[1], thread_id=wrong, turn=2, prev_user_anchor=MSGS[0])
+    assert (s2["thread_id"], s2["binding"]) == (tid, "id_fuzzy")
+    assert len(_files(vault)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_new_chat_never_joins_a_recent_one(vault):
+    svc = _svc(vault)
+    _, e1 = await _reply_turn(svc, "save this chat", "saved")
+    s = await svc.log_turn(user_message="save this chat")  # first call of a new chat
+    assert s["thread_id"] != e1["thread_id"] and s["binding"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_two_recent_chats_with_the_same_latest_message_are_not_guessed(vault):
+    svc = _svc(vault)
+    _, a = await _reply_turn(svc, "more", "a")
+    _, b = await _reply_turn(svc, "more", "b")
+    s = await svc.log_turn(user_message="next question", turn=2, prev_user_anchor="more")
+    assert s["thread_id"] not in (a["thread_id"], b["thread_id"])
+

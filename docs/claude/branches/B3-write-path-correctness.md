@@ -70,6 +70,7 @@
 6. FileStore restart safety (W-4) and atomic creation (W-11): B6 L1/L2. Add a two-instance restart case to the FileStore Hypothesis model.
 
 ## Change log (newest first)
+- 2026-10-06 · FOUND/ADDED · P1-18: a call that lost or mistyped its `thread_id` opened a new file (deployed mirror: 7 one-turn files from a few chats). FileStore binding now recovers it by short id / near id (`id_fuzzy`), or by the single thread active in the last 6 h whose latest user message the call names (`recent`). Never on a chat's first call; never on ambiguity (I-3 kept). PgStore not yet. Uncommitted.
 - 2026-10-06 · FIXED · WD read path: exact body round trip (`formatter._turn_body`), `tests/test_turn_roundtrip.py`; uncommitted.
 - 2026-10-06 · FOUND · WD ✅ → ◐: parser strips first-line indentation and drops `[… — not archived]`-shaped lines; only `canonical_v1` had been checked.
 - 2026-10-06 · REVISED · Migration tests build their fixture per run (were reading a stale folder that now holds the deployed mirror). Full suite: 162 passed, 4 skipped; run_tests 21/21.

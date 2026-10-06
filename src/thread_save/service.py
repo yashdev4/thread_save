@@ -13,7 +13,6 @@ Contains all protocol logic:
 from __future__ import annotations
 
 import asyncio
-from difflib import SequenceMatcher
 import inspect
 import re
 import logging
@@ -25,7 +24,7 @@ from thread_save.models import Fidelity, MAX_BODY_CHARS, SlotKey
 from thread_save.security.idempotency import compute_content_hash
 from thread_save.security.redactor import redact_text
 from thread_save.storage.formatter import format_open_body
-from thread_save.storage.identity import normalise_anchor
+from thread_save.storage.identity import anchors_agree as _anchors_agree, normalise_anchor
 from thread_save.storage.protocol import Store, Stub, ThreadHit, ThreadStats
 from thread_save.telemetry.events import EventLogger
 
@@ -63,27 +62,6 @@ _MARKDOWN_LINE_RE = re.compile(r"^\s{0,3}(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\||```|~~
 
 # log_turn never creates more not_logged stubs than this in one call
 _MAX_NOT_LOGGED_PER_CALL = 50
-# E8-3: how loosely a model-copied previous-message anchor may match the stored one
-_ANCHOR_PREFIX_MIN = 16
-_ANCHOR_SIMILARITY = 0.8
-
-
-def _anchors_agree(sent: str, stored: str) -> bool:
-    """E8-3: does a model-sent previous-message anchor name the stored user turn?
-
-    The model copies "the first 80 characters" of a message it read earlier, so
-    small differences (cut short, a typo, changed punctuation) still count.
-    """
-    a, b = normalise_anchor(sent), normalise_anchor(stored)
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    shorter = min(len(a), len(b))
-    if shorter >= _ANCHOR_PREFIX_MIN and (a.startswith(b) or b.startswith(a)):
-        return True
-    return SequenceMatcher(None, a, b).ratio() >= _ANCHOR_SIMILARITY
-
 
 async def _skipped_turn(txn, highest: int, prev_user_anchor: str | None) -> bool:
     """E8-3: the previous-message anchor names a message the server never stored.
@@ -601,7 +579,12 @@ class TurnService:
             reply_stored = reply
             last_stored = last_reply
 
-        bind_res = await self._store.bind_thread(account, thread_id, prev_user_anchor)
+        # P1-18: a call 2 that lost its thread_id is recognised by its user message
+        # (only when it carries a reply, so a new chat is never pulled into an old one)
+        bind_res = await self._store.bind_thread(
+            account, thread_id, prev_user_anchor,
+            user_message=user_message if reply is not None else None,
+        )
         bound_id = bind_res.thread_id
         binding = bind_res.method
         if not bound_id:
@@ -721,6 +704,7 @@ class TurnService:
             "n": n,
             "next_turn": n + 1,
             "binding": binding,
+            "sent_thread_id": bool(thread_id),
             "action": action,
             "not_logged": gap_ns,
             "recovered_reply": recovered_reply_n,

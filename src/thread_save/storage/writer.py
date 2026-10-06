@@ -14,7 +14,7 @@ import glob
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Any
 
@@ -44,6 +44,7 @@ from thread_save.storage.formatter import (
 )
 from thread_save.storage.gaps import GapTracker
 from thread_save.storage.identity import (
+    anchors_agree,
     generate_thread_id,
     generate_thread_id_short,
     normalise_anchor,
@@ -75,6 +76,10 @@ class _CountList(list):
         if other == 0 and len(self) == 0:
             return True
         return super().__eq__(other)
+
+
+# P1-18: how long a chat counts as active when a call lost its thread_id
+_RECENT_BIND_WINDOW = timedelta(hours=6)
 
 
 class _ThreadEntry:
@@ -672,12 +677,77 @@ class FileStore:
         thread_id: str | None,
         prev_user_anchor: str | None,
         account: str,
+        user_message: str | None = None,
     ) -> tuple[str | None, str]:
         if thread_id:
             if self._registry.exists(thread_id) or self._rehydrate(thread_id, account):
                 return thread_id, "id"
             if thread_id in self._offloaded_threads:
                 return thread_id, "offloaded_id"
+            # P1-18: the model copied the 26-character id with a mistake
+            fixed = self._match_mangled_id(thread_id, account)
+            if fixed:
+                return fixed, "id_fuzzy"
+
+        tid, method = self._bind_by_anchor(prev_user_anchor, account)
+        if tid or method == "ambiguous":
+            return (tid, method) if tid else (None, "new")
+        # P1-18: no usable id; the chat's latest message identifies its thread
+        recent = self._bind_recent(account, prev_user_anchor, user_message)
+        if recent:
+            return recent, "recent"
+        return None, "new"
+
+    def _match_mangled_id(self, thread_id: str, account: str) -> Optional[str]:
+        """The one known thread whose id differs from `thread_id` by a copying slip."""
+        self._load_account(account)
+        sent = thread_id.strip().upper()
+        candidates = []
+        for tid, entry in self._registry.all_entries().items():
+            if entry.meta.account != account:
+                continue
+            same_tail = tid[-6:].upper() == sent[-6:]
+            near = len(tid) == len(sent) and sum(a != b for a, b in zip(tid.upper(), sent)) <= 2
+            if same_tail or near:
+                candidates.append(tid)
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _bind_recent(
+        self, account: str, prev_user_anchor: str | None, user_message: str | None
+    ) -> Optional[str]:
+        """A thread of this account, active recently, whose latest user message is
+        the one this call names: the previous message (a new turn), or this very
+        message with no reply stored yet (an end-of-reply call). Only a single match
+        binds, so two chats are never merged on a guess (I-3)."""
+        if not (normalise_anchor(prev_user_anchor or "") or normalise_anchor(user_message or "")):
+            return None
+        self._load_account(account)
+        now = datetime.now(timezone.utc)
+        candidates = []
+        for tid, entry in self._registry.all_entries().items():
+            if entry.meta.account != account or not entry.anchor_map:
+                continue
+            updated = entry.meta.updated
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            if now - updated > _RECENT_BIND_WINDOW:
+                continue
+            last_n = max(n for n, a in entry.anchor_map.items() if a) if any(entry.anchor_map.values()) else 0
+            if not last_n:
+                continue
+            latest = entry.anchor_map[last_n]
+            if prev_user_anchor and anchors_agree(prev_user_anchor, latest):
+                candidates.append(tid)
+            elif user_message and normalise_anchor(user_message) == latest:
+                reply = self._slots.get(tid, SlotKey(last_n, "assistant"))
+                if reply is None or reply.fidelity in (Fidelity.OPEN, Fidelity.STUB):
+                    candidates.append(tid)
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _bind_by_anchor(self, prev_user_anchor: str | None, account: str) -> tuple[Optional[str], str]:
+        """Exact anchor binding (§4.1). Returns (thread_id, "anchor") on a match,
+        (None, "ambiguous") when several threads match, else (None, "new")."""
+        thread_id = None
 
         if prev_user_anchor:
             norm_anchor = normalise_anchor(prev_user_anchor)
@@ -694,7 +764,7 @@ class FileStore:
                 if len(candidates) == 1:
                     return candidates[0], "anchor"
                 elif len(candidates) > 1:
-                    return None, "new"
+                    return None, "ambiguous"
 
                 found = search_active_by_anchor(self._config, norm_anchor)
                 if found and (
@@ -710,9 +780,9 @@ class FileStore:
                 if len(offloaded_matches) == 1:
                     return offloaded_matches[0], "offloaded_anchor"
                 elif len(offloaded_matches) > 1:
-                    return None, "new"
+                    return None, "ambiguous"
 
-        return None, "new"
+        return thread_id, "new"
 
     # ── Store Protocol Implementation (§4.1) ───────────────────────────
 
@@ -721,8 +791,9 @@ class FileStore:
         account_id: str,
         thread_id: str | None,
         anchor: str | None,
+        user_message: str | None = None,
     ) -> BindResult:
-        tid, method = self._bind_thread(thread_id, anchor, account_id)
+        tid, method = self._bind_thread(thread_id, anchor, account_id, user_message)
         return BindResult(thread_id=tid, method=method)
 
     async def create_thread(

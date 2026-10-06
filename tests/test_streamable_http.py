@@ -223,7 +223,8 @@ async def test_streamable_http_mcp_flow(app, pg_store):
             result_dict = json.loads(content)
             assert result_dict["ok"] is True
             assert result_dict["next_turn"] == 2
-            assert set(result_dict) == {"ok", "thread_id", "next_turn"}  # I-5: tiny, data-only
+            # I-5: tiny; `next` names the id the next reply needs (P1-18)
+            assert set(result_dict) == {"ok", "thread_id", "next_turn", "next"}
             tid = result_dict["thread_id"]
 
             # Verify both sides of the turn were written to Postgres

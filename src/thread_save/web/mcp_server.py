@@ -136,8 +136,10 @@ def create_http_mcp_server(service: TurnService) -> ArchiveServer:
             )
             # P1-15 measurement: is the logged reply formatted or a flattened retelling?
             logger.info(
-                "vault_log_turn n=%s action=%s reply_fidelity=%s reply_shape=%s recovered_reply=%s",
+                "vault_log_turn n=%s action=%s binding=%s sent_thread_id=%s "
+                "reply_fidelity=%s reply_shape=%s recovered_reply=%s",
                 result.get("n"), result.get("action"),
+                result.get("binding"), result.get("sent_thread_id"),
                 result.get("reply_fidelity"), result.get("reply_shape"), result.get("recovered_reply"),
             )
             return public_result(result, REMOTE_TOOL_NAMES["log_turn"])

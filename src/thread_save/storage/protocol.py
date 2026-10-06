@@ -94,7 +94,9 @@ class Store(Protocol):
         account_id: str,
         thread_id: str | None,
         anchor: str | None,
+        user_message: str | None = None,
     ) -> BindResult:
+        """user_message: set for an end-of-reply call, to find its turn when the id was lost."""
         ...
 
     async def create_thread(
