@@ -189,9 +189,11 @@ async def _log_turn(
                 account=config.default_account,
             )
 
-        if result.get("ok") and result.get("action") == "write":
+        if result.get("ok") and result.get("action") in ("write", "merge"):
+            # A merge only changed the reply of an already indexed turn (E2b)
             _index_queue.put((
-                index, result["thread_id"], result["n"], user_message,
+                index, result["thread_id"], result["n"],
+                user_message if result["action"] == "write" else "",
                 reply if result.get("reply_fidelity") else None,
                 title_hint, service.thread_index_info(result["thread_id"]),
             ))
@@ -571,7 +573,8 @@ def _do_index(
                 created=info.get("created") or now,
                 updated=info.get("updated") or now,
             )
-        index.index_turn(thread_id, n, "user", user_text, title=title)
+        if user_text:
+            index.index_turn(thread_id, n, "user", user_text, title=title)
         if reply_text:
             index.index_turn(thread_id, n, "assistant", reply_text, title=title)
     except Exception:

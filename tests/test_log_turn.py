@@ -186,6 +186,121 @@ async def test_secrets_are_redacted_before_storage(vault):
     assert "AAAAAAAAAAAAAAAAAAAA" not in _slots(vault)[(1, "user")][1]
 
 
+# ── E2b: one stored turn per reply, whenever the model calls ─────────────
+
+async def _two_turns(svc):
+    r1 = await svc.log_turn(user_message="first question", reply="first answer")
+    return r1, dict(thread_id=r1["thread_id"], prev_user_anchor="first question")
+
+
+@pytest.mark.asyncio
+async def test_early_then_end_call_is_one_turn(vault):
+    svc = _svc(vault)
+    r1, ctx = await _two_turns(svc)
+    early = await svc.log_turn(user_message="second question", turn=r1["next_turn"], **ctx)
+    end = await svc.log_turn(user_message="second question", reply="second answer",
+                             turn=early["next_turn"], **ctx)
+    assert (early["n"], end["n"], end["action"], end["next_turn"]) == (2, 2, "merge", 3)
+    slots = _slots(vault)
+    assert slots[(2, "assistant")] == ("reported", "second answer")
+    assert (3, "user") not in slots
+    # The next real turn continues at 3
+    r3 = await svc.log_turn(user_message="third", reply="a3", thread_id=r1["thread_id"],
+                            turn=end["next_turn"], prev_user_anchor="second question")
+    assert r3["n"] == 3
+    assert verify_vault(vault) == 0
+
+
+@pytest.mark.asyncio
+async def test_early_then_end_call_on_first_turn_is_one_turn(vault):
+    svc = _svc(vault)
+    early = await svc.log_turn(user_message="hello there", title_hint="Hi")
+    end = await svc.log_turn(user_message="hello there", reply="Hi! How can I help?",
+                             thread_id=early["thread_id"], turn=early["next_turn"])
+    assert (end["n"], end["action"]) == (1, "merge")
+    assert set(_slots(vault)) == {(1, "user"), (1, "assistant")}
+
+
+@pytest.mark.asyncio
+async def test_placeholder_then_full_reply_keeps_the_full_one(vault):
+    svc = _svc(vault)
+    r1, ctx = await _two_turns(svc)
+    early = await svc.log_turn(user_message="second question", reply="Let me look.",
+                               turn=r1["next_turn"], **ctx)
+    end = await svc.log_turn(user_message="second question", reply="Here is the full answer.",
+                             turn=early["next_turn"], **ctx)
+    assert end["n"] == 2
+    assert _slots(vault)[(2, "assistant")][1] == "Here is the full answer."
+    assert (3, "user") not in _slots(vault)
+
+
+@pytest.mark.asyncio
+async def test_retry_replaces_reply_newest_wins(vault):
+    svc = _svc(vault)
+    r1, ctx = await _two_turns(svc)
+    first = await svc.log_turn(user_message="second question", reply="a long first attempt " * 5,
+                               turn=r1["next_turn"], **ctx)
+    # Retry: the model's context is rolled back, so it sends the same turn number
+    retry = await svc.log_turn(user_message="second question", reply="short retry",
+                               turn=r1["next_turn"], **ctx)
+    assert (first["n"], retry["n"], retry["action"]) == (2, 2, "merge")
+    assert _slots(vault)[(2, "assistant")][1] == "short retry"
+    # Network retry of the same call changes nothing
+    again = await svc.log_turn(user_message="second question", reply="short retry",
+                               turn=r1["next_turn"], **ctx)
+    assert (again["n"], again["action"]) == (2, "no_op")
+    assert (3, "user") not in _slots(vault)
+    assert verify_vault(vault) == 0
+
+
+@pytest.mark.asyncio
+async def test_repeat_after_merge_is_no_op(vault):
+    svc = _svc(vault)
+    r1, ctx = await _two_turns(svc)
+    early = await svc.log_turn(user_message="second question", turn=r1["next_turn"], **ctx)
+    kw = dict(user_message="second question", reply="second answer", turn=early["next_turn"], **ctx)
+    await svc.log_turn(**kw)
+    again = await svc.log_turn(**kw)
+    assert (again["n"], again["action"]) == (2, "no_op")
+
+
+@pytest.mark.asyncio
+async def test_identical_user_messages_stay_separate_turns(vault):
+    svc = _svc(vault)
+    r = await svc.log_turn(user_message="tell me a story", reply="Once upon a time...")
+    tid, prev = r["thread_id"], "tell me a story"
+    ns = []
+    for i in range(3):
+        r = await svc.log_turn(user_message="continue", reply=f"part {i}", thread_id=tid,
+                               turn=r["next_turn"], prev_user_anchor=prev)
+        ns.append(r["n"])
+        prev = "continue"
+    assert ns == [2, 3, 4]
+    assert [_slots(vault)[(n, "assistant")][1] for n in ns] == ["part 0", "part 1", "part 2"]
+
+
+@pytest.mark.asyncio
+async def test_without_anchor_a_doubtful_repeat_is_appended(vault):
+    svc = _svc(vault)
+    r1, ctx = await _two_turns(svc)
+    r2 = await svc.log_turn(user_message="continue", reply="part 1", thread_id=r1["thread_id"],
+                            turn=r1["next_turn"])
+    r3 = await svc.log_turn(user_message="continue", reply="part 2", thread_id=r1["thread_id"],
+                            turn=r2["next_turn"])
+    # Turn 2 already has a reply and `turn` names a new turn: kept, never overwritten
+    assert (r2["n"], r3["n"]) == (2, 3)
+    assert _slots(vault)[(2, "assistant")][1] == "part 1"
+
+
+@pytest.mark.asyncio
+async def test_user_only_double_call_is_one_turn(vault):
+    svc = _svc(vault, capture=CaptureMode.USER_ONLY)
+    r1 = await svc.log_turn(user_message="q1")
+    r2 = await svc.log_turn(user_message="q1", thread_id=r1["thread_id"], turn=r1["next_turn"])
+    assert (r2["n"], r2["action"]) == (1, "no_op")
+    assert _slots(vault) == {(1, "user"): ("verbatim", "q1")}
+
+
 # ── PgStore ───────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -229,3 +344,26 @@ async def test_pg_log_turn_chain_gaps_and_ranks(pg_store):
 
     stats = await pg_store.stats(acct, tid)
     assert stats.reported == 2 and stats.verbatim == 3
+
+
+@pytest.mark.asyncio
+async def test_pg_second_call_for_a_turn_is_merged(pg_store):
+    cfg = load_config()
+    svc = TurnService(pg_store, config=cfg)
+    acct = "logturn-merge"
+    r1 = await svc.log_turn(user_message="q1", reply="a1", account=acct)
+    tid = r1["thread_id"]
+    ctx = dict(thread_id=tid, prev_user_anchor="q1", account=acct)
+    early = await svc.log_turn(user_message="q2", turn=r1["next_turn"], **ctx)
+    end = await svc.log_turn(user_message="q2", reply="a long second answer", turn=early["next_turn"], **ctx)
+    retry = await svc.log_turn(user_message="q2", reply="short", turn=r1["next_turn"], **ctx)
+    assert (early["n"], end["n"], end["action"], retry["n"], retry["action"]) == (2, 2, "merge", 2, "merge")
+
+    async with pg_store.pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT n, role, body FROM turns WHERE thread_id = $1 ORDER BY n, role", tid
+        )
+        assert [(r["n"], r["role"]) for r in rows] == [(1, "assistant"), (1, "user"), (2, "assistant"), (2, "user")]
+        assert rows[2]["body"].strip() == "short"
+        violations, _ = await check_pg_fsck_conn(conn)
+        assert violations == []

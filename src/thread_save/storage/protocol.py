@@ -60,7 +60,13 @@ class ThreadTxn(Protocol):
         page: int | None = None,
         model: str = "",
         anchor: str = "",
+        newest_wins: bool = False,
     ) -> UpsertResult:
+        """newest_wins: replace any different body, ignoring fidelity rank and length."""
+        ...
+
+    async def match_anchor(self, text: str) -> Optional[int]:
+        """Highest n whose user anchor equals normalise_anchor(text), or None."""
         ...
 
     async def write_stubs(self, stubs: list[Stub]) -> None:

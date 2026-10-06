@@ -165,6 +165,7 @@ class PgThreadTxn:
         page: int | None = None,
         model: str = "",
         anchor: str = "",
+        newest_wins: bool = False,
     ) -> UpsertResult:
         if not self._conn or self._is_tombstoned:
             return UpsertResult(action="no_op", n=n)
@@ -234,7 +235,8 @@ class PgThreadTxn:
                 recovered = turns.recovered OR EXCLUDED.recovered,
                 updated_at = now()
             WHERE turns.hash <> EXCLUDED.hash
-              AND (EXCLUDED.fidelity > turns.fidelity
+              AND ($12::boolean
+                   OR EXCLUDED.fidelity > turns.fidelity
                    OR (EXCLUDED.fidelity = turns.fidelity AND EXCLUDED.chars > turns.chars))
             RETURNING (xmax = 0) AS inserted;
             """,
@@ -249,6 +251,7 @@ class PgThreadTxn:
             turn_page,
             turn_key,
             anchor or None,
+            newest_wins,
         )
 
         cur_max = (

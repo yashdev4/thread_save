@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from thread_save.config import CaptureMode, VaultConfig, load_config
-from thread_save.models import Fidelity, MAX_BODY_CHARS
+from thread_save.models import Fidelity, MAX_BODY_CHARS, SlotKey
 from thread_save.security.idempotency import compute_content_hash
 from thread_save.security.redactor import redact_text
 from thread_save.storage.formatter import format_open_body
@@ -55,6 +55,28 @@ _SUMMARY_LINE_RE = re.compile(r"^\s*\[[^\[\]]{30,}\]\s*$", re.M)
 
 # log_turn never creates more not_logged stubs than this in one call
 _MAX_NOT_LOGGED_PER_CALL = 50
+
+
+async def _is_same_turn(
+    txn, slots, thread_id: str, n: int,
+    user_message: str, prev_user_anchor: str | None, turn: int | None,
+) -> bool:
+    """B7 E2b: is this log_turn call another call for turn n, the latest turn?
+
+    The user message must match turn n's. The previous-message anchor then tells a
+    repeat call (anchor = turn n-1) from a new turn that repeats the same words
+    (anchor = turn n). Without an anchor, only cases that cannot be a new turn
+    match: the first turn, a turn with no reply yet, or `turn` naming n itself.
+    A doubtful case is appended, which can duplicate but never loses a reply.
+    """
+    if n < 1 or await txn.match_anchor(user_message) != n:
+        return False
+    if normalise_anchor(prev_user_anchor or ""):
+        return n > 1 and await txn.match_anchor(prev_user_anchor) == n - 1
+    if n == 1 or turn == n:
+        return True
+    reply = slots.get(thread_id, SlotKey(n, "assistant"))
+    return reply is None or reply.fidelity in (Fidelity.OPEN, Fidelity.STUB)
 
 
 def classify_reply(reply: str) -> Fidelity:
@@ -439,6 +461,8 @@ class TurnService:
         One call writes (n, user) and (n, assistant) in one transaction. The model
         is never asked for earlier output: the server issues thread_id and
         next_turn, and turns that were never logged become `not_logged` stubs.
+        A second call for the latest turn fills or replaces its reply instead of
+        adding a turn (E2b), so each reply is stored once.
         Returns an internal dict; tool wrappers expose only ok/thread_id/next_turn.
         """
         account = account or self._config.default_account
@@ -514,12 +538,29 @@ class TurnService:
         async with self._store.thread_txn(account, bound_id) as txn:
             slots = await txn.load_slots()
             existing_n = slots.find_turn_key(bound_id, turn_key)
+            highest = slots.highest_n(bound_id)
             if existing_n is not None:
                 # Retry of a call that already committed: change nothing (W-4)
                 n = existing_n
+            elif await _is_same_turn(txn, slots, bound_id, highest, user_message, prev_user_anchor, turn):
+                # E2b: a second call for the latest turn (called early and again at
+                # the end, or the user pressed Retry). One turn per reply: the newest
+                # reply fills or replaces that turn's reply; nothing is appended.
+                n = highest
+                if reply_stored is not None and reply_fidelity is not None:
+                    res = await txn.upsert_turn(
+                        n=n,
+                        role="assistant",
+                        body=reply_stored,
+                        fidelity=reply_fidelity,
+                        model=model_hint,
+                        newest_wins=True,
+                    )
+                    if res.action != "no_op":
+                        action = "merge"
+                        await txn.enqueue_export()
             else:
                 action = "write"
-                highest = slots.highest_n(bound_id)
                 n = highest + 1
                 # A stale or absurd `turn` never overwrites or floods the thread
                 if turn is not None and highest + 1 < turn <= highest + 1 + _MAX_NOT_LOGGED_PER_CALL:

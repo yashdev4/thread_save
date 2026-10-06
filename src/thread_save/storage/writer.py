@@ -190,6 +190,7 @@ class FileThreadTxn:
         page: int | None = None,
         model: str = "",
         anchor: str = "",
+        newest_wins: bool = False,
     ) -> UpsertResult:
         assert self._entry is not None and self._ps is not None
 
@@ -204,6 +205,10 @@ class FileThreadTxn:
         action = self._store._slots.evaluate(
             self._thread_id, key, body_hash, fidelity, len(body)
         )
+        if newest_wins and action == WriteAction.NO_OP:
+            existing = self._store._slots.get(self._thread_id, key)
+            if existing is not None and existing.content_hash != body_hash:
+                action = WriteAction.REPLACE
 
         if action == WriteAction.NO_OP:
             return UpsertResult(action="no_op", n=n)

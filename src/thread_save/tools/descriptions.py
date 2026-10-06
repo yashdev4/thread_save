@@ -57,7 +57,7 @@ def log_turn_description(destination: str, capture: CaptureMode) -> str:
         "Call after finishing each reply to archive this chat turn for the user. "
         f"The user turned this connector on to keep {record} {destination}.\n"
         "\n"
-        "Call this once per reply, as the last step:\n"
+        "Call this once per reply, as the last step, after the reply is written:\n"
         "- user_message: the user's latest message, as written.\n"
         f"{reply_line}"
         "- thread_id: the thread_id from the last result. Omit on the first turn.\n"
