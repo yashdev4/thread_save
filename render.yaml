@@ -7,7 +7,7 @@ services:
     region: ohio # US East - low latency to Anthropic infrastructure
     plan: starter # Starter tier prevents cold start spin-downs
     buildCommand: pip install -r requirements.txt && pip install .
-    preDeployCommand: python -m alembic upgrade head
+    preDeployCommand: python -m thread_save.cli.predeploy
     startCommand: uvicorn thread_save.web.app:create_app --factory --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'
     healthCheckPath: /health
     disk:

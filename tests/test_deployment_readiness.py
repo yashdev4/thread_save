@@ -186,7 +186,25 @@ def test_h7_deploy_config_migrations_and_non_sleeping_instance():
     render_path = Path("render.yaml")
     assert render_path.exists()
     render_content = render_path.read_text(encoding="utf-8")
-    assert "preDeployCommand: python -m alembic upgrade head" in render_content
+    # Standalone deploys use FileStore; the guard runs alembic only with Postgres
+    assert "preDeployCommand: python -m thread_save.cli.predeploy" in render_content
     # Non-sleeping paid plan (free tier sleeps after 15m)
     assert "plan: starter" in render_content
     assert "plan: free" not in render_content
+
+
+def test_predeploy_migrates_only_with_postgres(monkeypatch):
+    from thread_save.cli import predeploy
+
+    assert predeploy.uses_postgres({"DATABASE_URL": "postgresql://x/db"})
+    assert not predeploy.uses_postgres({"THREADVAULT_STORAGE_BACKEND": "file", "DATABASE_URL": "postgresql://x/db"})
+    assert not predeploy.uses_postgres({})
+
+    calls = []
+    monkeypatch.setattr(predeploy.subprocess, "call", lambda args: calls.append(args) or 0)
+    monkeypatch.setenv("THREADVAULT_STORAGE_BACKEND", "file")
+    assert predeploy.main() == 0 and calls == []
+    monkeypatch.setenv("THREADVAULT_STORAGE_BACKEND", "postgres")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x/db")
+    assert predeploy.main() == 0
+    assert calls[0][1:] == ["-m", "alembic", "upgrade", "head"]
