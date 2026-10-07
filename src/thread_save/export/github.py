@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass, field
+import hashlib
 import json
 import logging
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
@@ -49,10 +50,6 @@ class MovedRefMaxRestartsError(GitHubExportError):
     """Raised when concurrent branch updates cause 422 retries to exceed max limit."""
 
 
-class GitHubConflictError(GitHubExportError):
-    """Raised when remote contents conflict with local state."""
-
-
 class PushProtectionError(GitHubExportError):
     """Raised when GitHub secret scanning push protection rejects a commit."""
 
@@ -74,6 +71,12 @@ class GitHubBatchResult:
     restarts: int = 0
     blob_shas: dict[str, str] = field(default_factory=dict)
 
+
+
+def git_blob_sha(content: str) -> str:
+    """The sha Git (and GitHub) gives a file with this content."""
+    data = content.encode("utf-8")
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
 class GitHubDataApiTarget:
@@ -267,13 +270,40 @@ class GitHubDataApiTarget:
             async with self._get_client() as c:
                 return await _do_fetch(c)
 
+    async def _only_changed(
+        self, client: httpx.AsyncClient, base_tree_sha: str, files: list[GitHubFileEntry]
+    ) -> list[GitHubFileEntry]:
+        """The files that differ from the branch's current tree (P1-2)."""
+        resp = await self._request(
+            "GET", f"/repos/{self.repo}/git/trees/{base_tree_sha}?recursive=1", client
+        )
+        if resp.status_code != 200:
+            return files  # cannot compare: upload everything, as before
+        data = resp.json()
+        if data.get("truncated"):
+            return files
+        remote = {i["path"]: i.get("sha") for i in data.get("tree", []) if i.get("type") == "blob"}
+        changed = []
+        for f in files:
+            if f.content is None:
+                if f.path in remote:
+                    changed.append(f)
+            elif remote.get(f.path) != git_blob_sha(f.content):
+                changed.append(f)
+        return changed
+
     async def push_batch(
         self,
         files: list[GitHubFileEntry],
         commit_message: str,
         verify_private: bool = True,
+        skip_unchanged: bool = False,
     ) -> GitHubBatchResult:
-        """Execute atomic batch push using Git Data API (G1)."""
+        """Execute atomic batch push using Git Data API (G1).
+
+        skip_unchanged (P1-2): files whose content GitHub already has are left out,
+        and when nothing is left no tree, commit or ref update is made.
+        """
         if not files:
             return GitHubBatchResult(
                 commit_sha="",
@@ -333,6 +363,8 @@ class GitHubDataApiTarget:
                                 )
 
                 active_files = [f for f in files if f.path not in conflicts]
+                if skip_unchanged and base_tree_sha is not None and active_files:
+                    active_files = await self._only_changed(client, base_tree_sha, active_files)
                 if not active_files:
                     return GitHubBatchResult(
                         commit_sha="",
@@ -529,4 +561,3 @@ class GitHubDataApiTarget:
                 current_tree_sha,
             )
             return squashed_commit_sha
-

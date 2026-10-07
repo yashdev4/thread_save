@@ -429,6 +429,7 @@ class FileThreadTxn:
             ensure_directory(pfile.parent)
             await self._store._atomic_write(pfile, ptext.encode("utf-8"))
         self._entry.persisted = True
+        self._store._signal_export(self._thread_id)
 
         # Commit slots and gaps in-memory
         for key, body_hash, fidelity, length, turn_key in self._staged_slots:
@@ -468,6 +469,8 @@ class FileStore:
             tid: ptr.to_dict() for tid, ptr in self._offload_mgr.offload_index.load().items()
         }
         self._pending_export_threads: set[str] = set()
+        # P1-2: set after every save that wrote a page; the GitHub sync waits on it
+        self._export_event: Optional[asyncio.Event] = None
         self._loaded_accounts: set[str] = set()
 
     def _get_thread_lock(self, thread_id: str) -> asyncio.Lock:
@@ -557,6 +560,29 @@ class FileStore:
         ).name
 
     # ── Restart recovery (B6 L1) ───────────────────────────────────────
+
+    # ── GitHub sync signal (P1-2) ─────────────────────────────────────────
+
+    def export_signal(self) -> asyncio.Event:
+        """Event set after every save that wrote a page to disk."""
+        if self._export_event is None:
+            self._export_event = asyncio.Event()
+        return self._export_event
+
+    def _signal_export(self, thread_id: str) -> None:
+        self._pending_export_threads.add(thread_id)
+        if self._export_event is not None:
+            self._export_event.set()
+
+    def take_export_threads(self) -> list[str]:
+        """Threads saved since the last call, with their titles: [(id, title)]."""
+        ids = sorted(self._pending_export_threads)
+        self._pending_export_threads.clear()
+        out = []
+        for tid in ids:
+            entry = self._registry.get(tid)
+            out.append((tid, entry.meta.title if entry else ""))
+        return out
 
     def _account_dir(self, account: str) -> Optional[Path]:
         if not account or account.startswith((".", "_")):
@@ -996,10 +1022,6 @@ class FileStore:
                     tmp.unlink()
                 except OSError:
                     pass
-
-    async def _atomic_append(self, target: Path, data: bytes) -> None:
-        existing = target.read_bytes() if target.exists() else b""
-        await self._atomic_write(target, existing + data)
 
 
 def WriteEngine(config: VaultConfig):

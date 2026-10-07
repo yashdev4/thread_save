@@ -111,6 +111,9 @@ Every environment variable and secret required or supported for deployment:
 | `THREADVAULT_MODE` | Config | `turn_start` | Optional | Legacy `vault_save_turn` only: `turn_start` (default) or `both`. |
 | `THREADVAULT_CAPTURE` | Config | `full` | Optional | `full`: `vault_log_turn` stores the user message and the reply just written. `user_only`: the `reply` field is removed from the tool schema (B7 E-floor). |
 | `THREADVAULT_REPLY_MAX_CHARS` | Config | `8000` | Optional | Cap on a logged reply; longer replies are stored as a prefix marked `truncated` (B7 E-budget). |
+| `THREADVAULT_SYNC_SETTLE_SECONDS` | Config | `30` | Optional | GitHub export runs **after saves only** (no timer). It waits until saves have been quiet this long, so a reply's two calls become one commit. Only changed files are uploaded; no commit is made when GitHub already has the content. `THREADVAULT_SYNC_INTERVAL_SECONDS` is no longer used. |
+| `THREADVAULT_SYNC_MAX_WAIT_SECONDS` | Config | `300` | Optional | Longest wait before pushing during a long, busy chat. |
+| `THREADVAULT_SYNC_RETRY_SECONDS` | Config | `300` | Optional | A failed push is tried once more after this delay (commits only if content still differs). |
 | `THREADVAULT_SKIP_CLIENTS` | Config | `claude-code` | Optional | Comma-separated client names/User-Agent substrings that are **not archived** (write tools hidden, forced calls are no-ops). `none` archives every client. Each skipped `tools/list` is logged as `tools/list for client <name/version>: write tools withheld`. |
 | `THREADVAULT_LEGACY_SAVE_TURN` | Config | off | Optional | `on` re-lists the old echo-based `vault_save_turn` tool. Fallback only; it carries the wording that tripped the model safeguard (P1-11). |
 | `THREADVAULT_NUDGE` | Config | `off` | Optional | Prompt nudge mode: `off` (default) or `on`. |

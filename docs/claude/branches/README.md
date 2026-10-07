@@ -30,6 +30,9 @@ B0  thread_saving_mcp_plan_v2.md ............ foundation (stdio, files, format, 
 └── B7  echo-free-capture (PROPOSED, v2) ....... replaces B1 §2/§4/§6 protocol; supersedes B6 L3
          MCP-only, deterministic. Paths A–E scored; E (layered) recommended.
          (v1 "deterministic-capture" = source capture outside MCP: 🔀 replaced, TIMELINE 66–67)
+         │
+         └── B8  attachments (PROPOSED) ......... user uploads + Claude-built artifacts/files
+                  Manifests on both calls first; artifact source/edits, upload link later.
 ```
 
 | ID | File | Source plan | Weight in parent | Status summary |
@@ -42,6 +45,7 @@ B0  thread_saving_mcp_plan_v2.md ............ foundation (stdio, files, format, 
 | B5 | [B5-standalone-deploy.md](B5-standalone-deploy.md) | none (emerged in commits) | — | **Live in production**; untested; P0 issues |
 | B6 | [B6-local-capture-fidelity.md](B6-local-capture-fidelity.md) | none (field report) | B1 × B3 | **Deployed** (`bad9e0c`): L0, L1, L2, L4; L5/L6 open |
 | B7 | [B7-echo-free-capture.md](B7-echo-free-capture.md) | none (safeguard report + owner constraint: MCP only) | replaces B1 §2/§4/§6 | **Deployed** (`bad9e0c`, `96acd6c`): path E, E0–E5, E2b; P1-15 reply contract uncommitted; E6/E6b/E7 open |
+| B8 | [B8-attachments.md](B8-attachments.md) | none (owner request 2026-10-07) | B7 × B3 | **Proposed**: U1–U6, C1–C5 scored; layered M recommended; nothing built |
 
 The original plan `.md` files are **not in the repo**. Copy them to `docs/plans/` (unchanged) so the section numbers cited here can be resolved. Until then they exist only in the chat that produced this folder.
 

@@ -50,6 +50,7 @@
 9. Remove the 3 `test-account` fixture pages from the production mirror and stop local runs from pushing to it (`run_local.ps1` already blanks `THREADVAULT_GH_REPO`).
 
 ## Change log (newest first)
+- 2026-10-07 · FIXED · P1-2: GitHub sync runs after saves only (FileStore `export_signal`, 30 s settle, 300 s max wait). It uploads only changed files (git blob sha vs branch tree) and makes no commit when nothing differs; the startup check pushes only what's missing. `render.yaml` now sets `THREADVAULT_SYNC_SETTLE_SECONDS` instead of the 60 s interval. Uncommitted.
 - 2026-10-06 · ADDED · Local mirror pull script (item 7); P0-3 confirmed live: repo public; test-fixture pages found in the production mirror.
 - 2026-10-05 · FOUND · Audit: the deployed loop bypasses G4/G5/G6; public repos allowed by default; 20 MB split and plaintext guard missing; empty-repo bootstrap likely broken.
 - 2026-10-05 17:42 · REVISED · `1f48fc8` D4 settle/batch via env (library only).

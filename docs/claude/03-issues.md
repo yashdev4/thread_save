@@ -110,6 +110,16 @@ Claude Code loads the user's claude.ai connectors into every coding session, and
 **Fix:** add `alembic`, `sqlalchemy`, `psycopg2-binary` (whatever `alembic/env.py` needs) to dependencies, **or** drop `preDeployCommand` while on the file backend; make the command conditional on `DATABASE_URL`.
 
 ### P1-2 · Sync loop makes a commit every 60 s forever and ignores all the GitHub policy code — Verified
+**Status 2026-10-07: fixed in the working tree, uncommitted.** Confirmed live: the last 6 mirror commits have identical trees. Bursts reach 58 commits/hour while Render is awake; there were none for 12 h while it slept.
+Fix:
+- FileStore sets `export_signal()` after every save that wrote a page.
+- The sync task waits on it, with no timer. It waits for `THREADVAULT_SYNC_SETTLE_SECONDS` (30) of quiet, capped at `MAX_WAIT` (300), so one reply makes one commit.
+- `push_batch(skip_unchanged=True)` compares git blob shas with the branch tree and uploads only changed files. With no changes it makes no tree, commit or ref update.
+- At startup, one check pushes only what GitHub is missing.
+- A failed push is retried once after 300 s.
+- The commit message names the chat.
+
+Tests: `tests/test_github_sync_on_save.py` (7; 3 fail with the unchanged check off). Not done: `GitHubBatchExporter` reuse and protection of human edits (`last_blob_sha`).
 `sync_loop.py:130-135` → `push_batch` every interval with the **entire tree**, no manifest/hash comparison; `push_batch` always creates tree+commit+ref update, so an unchanged vault still yields a new commit (~1 440/day, 3 API writes each). None of `GitHubBatchExporter` (settle window, batch cadence, unchanged-page skip, conflict detection via blob SHA, dead-lettering on push-protection, size guard) or the D4 `THREADVAULT_GH_SETTLE/BATCH_MINUTES` vars is used here. Human edits on GitHub are silently overwritten (`last_blob_sha` is never set). Repo size/history will balloon; the squash CLI only helps afterwards.
 **Fix:** reuse `GitHubBatchExporter` with a `FileStoreExportManifest` (already exists in `export/offload.py`) in the loop; or at minimum skip when the computed tree hash equals the last pushed one. Add tests for the loop (none exist).
 

@@ -87,7 +87,7 @@ class ThreadTxn(Protocol):
 
 
 class Store(Protocol):
-    """Persistence backend interface (FileStore | PgStore)."""
+    """Persistence backend interface (FileStore)."""
 
     async def bind_thread(
         self,

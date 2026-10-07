@@ -1,4 +1,4 @@
-"""B7 E2–E5: vault_log_turn protocol on FileStore and PgStore.
+"""B7 E2–E5: vault_log_turn protocol on FileStore.
 
 One call archives one complete turn. The server issues next_turn, caps the
 reply (E-budget), never labels model-sent replies verbatim (E-truth), records
@@ -7,7 +7,6 @@ the reply entirely in user_only mode (E-floor).
 """
 
 from dataclasses import replace
-import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -15,16 +14,11 @@ import tempfile
 import pytest
 
 from thread_save.config import CaptureMode, load_config
-from thread_save.fsck import check_pg_fsck_conn, verify_vault
+from thread_save.fsck import verify_vault
 from thread_save.models import Fidelity
 from thread_save.service import TurnService, classify_reply, reply_shape
 from thread_save.storage.formatter import parse_page
-from thread_save.storage.pg_store import PgStore
 from thread_save.storage.writer import FileStore
-
-TEST_DSN = os.environ.get(
-    "DATABASE_URL", "postgresql://postgres:@127.0.0.1:5432/thread_save_test"
-)
 
 
 @pytest.fixture
@@ -338,69 +332,3 @@ async def test_user_only_double_call_is_one_turn(vault):
     assert _slots(vault) == {(1, "user"): ("verbatim", "q1")}
 
 
-# ── PgStore ───────────────────────────────────────────────────────────────
-
-@pytest.fixture
-async def pg_store():
-    store = PgStore(dsn=TEST_DSN)
-    await store.connect()
-    async with store.pool.acquire() as conn:
-        await conn.execute(
-            "TRUNCATE turns, gaps, turn_chunks, outbox, deleted_threads, events, threads, accounts CASCADE"
-        )
-    yield store
-    await store.close()
-
-
-@pytest.mark.asyncio
-async def test_pg_log_turn_chain_gaps_and_ranks(pg_store):
-    cfg = load_config()
-    svc = TurnService(pg_store, config=cfg)
-    acct = "logturn-user"
-    r1 = await svc.log_turn(user_message="q1", reply="a1", title_hint="PG", account=acct)
-    tid = r1["thread_id"]
-    r2 = await svc.log_turn(user_message="q2", reply="a2", thread_id=tid, turn=r1["next_turn"], account=acct)
-    again = await svc.log_turn(user_message="q2", reply="a2", thread_id=tid, turn=r1["next_turn"], account=acct)
-    r5 = await svc.log_turn(user_message="q5", reply="[Provided a long summary of the earlier answer]",
-                            thread_id=tid, turn=5, account=acct)
-
-    assert (r1["n"], r2["n"], again["n"], again["action"], r5["n"]) == (1, 2, 2, "no_op", 5)
-    assert r5["not_logged"] == [3, 4]
-
-    async with pg_store.pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT n, role, fidelity FROM turns WHERE thread_id = $1 ORDER BY n, role", tid
-        )
-        ranks = {(r["n"], r["role"]): r["fidelity"] for r in rows}
-        assert ranks[(1, "user")] == Fidelity.VERBATIM.rank == 5
-        assert ranks[(1, "assistant")] == Fidelity.REPORTED.rank == 4
-        assert ranks[(3, "user")] == Fidelity.STUB.rank
-        assert ranks[(5, "assistant")] == Fidelity.ABRIDGED.rank
-        violations, _ = await check_pg_fsck_conn(conn)
-        assert violations == []
-
-    stats = await pg_store.stats(acct, tid)
-    assert stats.reported == 2 and stats.verbatim == 3
-
-
-@pytest.mark.asyncio
-async def test_pg_second_call_for_a_turn_is_merged(pg_store):
-    cfg = load_config()
-    svc = TurnService(pg_store, config=cfg)
-    acct = "logturn-merge"
-    r1 = await svc.log_turn(user_message="q1", reply="a1", account=acct)
-    tid = r1["thread_id"]
-    ctx = dict(thread_id=tid, prev_user_anchor="q1", account=acct)
-    early = await svc.log_turn(user_message="q2", turn=r1["next_turn"], **ctx)
-    end = await svc.log_turn(user_message="q2", reply="a long second answer", turn=early["next_turn"], **ctx)
-    retry = await svc.log_turn(user_message="q2", reply="short", turn=r1["next_turn"], **ctx)
-    assert (early["n"], end["n"], end["action"], retry["n"], retry["action"]) == (2, 2, "merge", 2, "merge")
-
-    async with pg_store.pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT n, role, body FROM turns WHERE thread_id = $1 ORDER BY n, role", tid
-        )
-        assert [(r["n"], r["role"]) for r in rows] == [(1, "assistant"), (1, "user"), (2, "assistant"), (2, "user")]
-        assert rows[2]["body"].strip() == "short"
-        violations, _ = await check_pg_fsck_conn(conn)
-        assert violations == []

@@ -119,24 +119,6 @@ def _log_failure(tool: str, code: str, **fields: Any) -> None:
 
 # ── Opt-out phrase detection (§6.5) ───────────────────────────────────────
 
-_OPT_OUT_PHRASES = frozenset({
-    "don't save this chat",
-    "dont save this chat",
-    "stop archiving",
-    "don't log this",
-    "dont log this",
-    "stop logging",
-    "don't archive this",
-    "dont archive this",
-})
-
-
-def _check_opt_out(text: str) -> bool:
-    """Check if user_query contains an opt-out phrase."""
-    normalised = text.strip().lower()
-    return any(phrase in normalised for phrase in _OPT_OUT_PHRASES)
-
-
 # ── Never-raise wrapper (§I-1) ────────────────────────────────────────────
 
 def _error_result(code: str, retryable: bool = False) -> dict:

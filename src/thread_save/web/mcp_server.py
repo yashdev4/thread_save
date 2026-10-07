@@ -33,7 +33,6 @@ from thread_save.tools.descriptions import (
     user_messages_only,
 )
 from thread_save.web.context import current_account_id
-from thread_save.web.viewer import create_viewer_token
 
 logger = logging.getLogger("thread_save.web.mcp_server")
 
@@ -266,14 +265,11 @@ def create_http_mcp_server(service: TurnService) -> ArchiveServer:
             )
             threads = []
             for hit in hits:
-                token = create_viewer_token(hit.thread_id, account)
                 threads.append({
                     "thread_id": hit.thread_id,
                     "title": hit.title,
                     "snippet": extract_snippet(hit.snippet, max_chars=200),
                     "updated_at": hit.updated_at,
-                    "viewer_url": f"/v/{token}",
-                    "download_url": f"/download/{hit.thread_id}.md?token={token}",
                 })
 
             search_mode = "titles_only" if is_titles_only else "full_text"

@@ -47,6 +47,7 @@
 7. P0-4 restart amnesia: B6 L1 (shared FileStore fix); also P1-9 last reply (B6 L3) applies to remote users.
 
 ## Change log (newest first)
+- 2026-10-07 · FOUND · `/health` took 32 s to answer: a cold start, so the instance sleeps even though `render.yaml` says `plan: starter`. If it is on the free plan, `/data/vault` is not a persistent disk. Owner to check the plan.
 - 2026-10-06 · FIXED · P1-1: `preDeployCommand` → `python -m thread_save.cli.predeploy` (same store choice as `create_app`); unpushed `77ec4bd` would otherwise fail every standalone deploy (no alembic, falls back to the 127.0.0.1 test URL).
 - 2026-10-06 · REVISED · P1-14 guard verified on the HTTP app (file backend) and its log lines now reach Render's log; still not deployed. Mirror check: `…KTMNR7` removed from `thread_vault` by hand (`37da652`); `…G27WKM` and `…NWKG42` remain. New since: `…6M03BX` (`client: claude-desktop`, a real chat).
 - 2026-10-06 · FOUND/REVISED · 3 of the 7 deployed threads are Claude Code sessions (P1-14), now in the public mirror. Claude Code no longer loads the connector (user `deniedMcpServers`); server guard ready, not deployed. Owner to decide whether to delete those 3 threads from Render + GitHub.

@@ -102,6 +102,7 @@ The old design called reliably but stored wrongly. The current design stores cor
 8. ◐ Invocation rate fell after the move to end-of-reply (P1-16). B7 E8 built 2026-10-06 (uncommitted): start call + end call, results name the next step, skipped turns stubbed (P1-17). Needs the E8-5 live run.
 
 ## Change log (newest first)
+- 2026-10-07 · REPLACED · Dead code removed: `GapTracker.mark_lost`/`expire_old`/`all_gap_ns` (never called, so open gaps never age to `lost` by time; `get_summary` unchanged), stdio duplicate `_OPT_OUT_PHRASES` + `_check_opt_out` (live opt-out is in `service.py`), unused `SaveTurnInput`/`BackfillInput`/`FindInput`/`StatsInput` models. Staged, not committed.
 - 2026-10-06 · REVISED · §6.2: every start call carries the turn-before reply (`last_reply`, B7 E8-7); the end call is still asked for as the final action. Owner dropped the safeguard constraint. Uncommitted, untested.
 - 2026-10-06 · ADDED · §6.2: the end call is still skipped live, so call 1 now carries `missed_reply` for a turn whose call 2 never came (B7 E8-6). Uncommitted, untested.
 - 2026-10-06 · REPLACED · §6.2: `vault_log_turn` is asked for at the start of each reply, plus a second call after the reply in `full` capture (B7 E8). The first sentence is now "Call at the start of each reply and again after it to archive this chat turn." The D1 test was changed to match. Uncommitted.

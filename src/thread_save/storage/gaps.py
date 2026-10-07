@@ -11,7 +11,7 @@ unreported and unrecovered gaps are marked lost.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -105,28 +105,6 @@ class GapTracker:
         if n in gaps:
             gaps[n].requested = True
 
-    def mark_lost(self, thread_id: str, n: int) -> None:
-        """Explicitly mark a gap as lost."""
-        gaps = self._get_gaps(thread_id)
-        if n in gaps:
-            gaps[n].state = GapState.LOST
-
-    def expire_old(
-        self,
-        thread_id: str,
-        now: datetime | None = None,
-    ) -> list[int]:
-        """Mark gaps older than lost_hours as lost. Returns newly lost n values."""
-        now = now or datetime.now(timezone.utc)
-        cutoff = now - timedelta(hours=self._lost_hours)
-        gaps = self._get_gaps(thread_id)
-        newly_lost = []
-        for g in gaps.values():
-            if g.state == GapState.OPEN and g.first_seen < cutoff:
-                g.state = GapState.LOST
-                newly_lost.append(g.n)
-        return newly_lost
-
     def get_summary(self, thread_id: str) -> dict:
         """Summary stats for vault_stats."""
         gaps = self._get_gaps(thread_id)
@@ -141,8 +119,3 @@ class GapTracker:
             "gaps_recovered_count": len(recovered),
             "gaps_lost_count": len(lost),
         }
-
-    def all_gap_ns(self, thread_id: str) -> list[int]:
-        """All known gap numbers for front matter."""
-        gaps = self._get_gaps(thread_id)
-        return sorted(gaps.keys())

@@ -52,6 +52,7 @@
 6. Gates a/b/e/f, once B5 is replaced or merged (see B5).
 
 ## Change log (newest first)
+- 2026-10-07 Â· REPLACED Â· Owner removed the Postgres stack from the code: `pg_store`, `renderer`, `viewer`, outbox `worker`, `export/sync.py`, `cli/migrate` (+ `scripts/verify_github_live.py`, 8 test files, PG tests in 9 more). App always uses FileStore; `vault_find` no longer returns `viewer_url`/`download_url` (they 404'd on FileStore). **Kept** (live dependency): `web/oauth.py` (routes mounted, middleware verifies Bearer tokens with it) and `cli/github.py` (squash; named in the mirror README). OAuth, HTTP and cross-surface tests moved to FileStore. Found: FileStore `find` ignores the account (Bob sees Alice's thread) â†’ xfail test. Alembic, `asyncpg` (fsck/report `--dsn`), Dockerfile untouched. Uncommitted.
 - 2026-10-05 · FOUND · Audit: envelope encryption never applied to bodies; outbox/purge/reaper never scheduled; Drive target reports success without uploading; rate limiter shared across users; stdio tool names unchanged (S3).
 - 2026-10-05 14:44 → 16:15 · REPLACED (prod) · B5 took over production (`fcbfe80`…`53284c7`). B2 remains the tested target architecture.
 - 2026-10-05 02:04 · ADDED · `c8d2b4b` pre-deploy safety.

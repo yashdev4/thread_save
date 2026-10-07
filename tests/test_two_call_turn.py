@@ -7,7 +7,6 @@ P1-17: a skipped call made the turn vanish, because the model sends back the
 next_turn it was given. The previous-message anchor now reveals the skip.
 """
 
-import os
 from dataclasses import replace
 from pathlib import Path
 import shutil
@@ -16,17 +15,11 @@ import tempfile
 import pytest
 
 from thread_save.config import CaptureMode, load_config
-from thread_save.fsck import check_pg_fsck_conn
-from thread_save.models import Fidelity
 from thread_save.service import TurnService
 from thread_save.storage.formatter import parse_page
-from thread_save.storage.pg_store import PgStore
 from thread_save.storage.writer import FileStore
 from thread_save.tools.descriptions import public_result
 
-TEST_DSN = os.environ.get(
-    "DATABASE_URL", "postgresql://postgres:@127.0.0.1:5432/thread_save_test"
-)
 
 MSGS = [
     "how do I rotate an API key safely",
@@ -248,46 +241,6 @@ async def test_service_marks_call_1_and_user_only_gets_next_turn(vault):
         assert "then" not in pub and pub["next_turn"] == 2
     finally:
         shutil.rmtree(other, ignore_errors=True)
-
-
-# ── PgStore ───────────────────────────────────────────────────────────────
-
-@pytest.fixture
-async def pg_store():
-    store = PgStore(dsn=TEST_DSN)
-    await store.connect()
-    async with store.pool.acquire() as conn:
-        await conn.execute(
-            "TRUNCATE turns, gaps, turn_chunks, outbox, deleted_threads, events, threads, accounts CASCADE"
-        )
-    yield store
-    await store.close()
-
-
-@pytest.mark.asyncio
-async def test_pg_two_calls_with_a_skipped_reply_and_a_mid_chat_start(pg_store):
-    svc = TurnService(pg_store, config=load_config())
-    acct = "twocall-e8"
-    _, e1 = await _reply_turn(svc, MSGS[0], "a1", account=acct)
-    tid = e1["thread_id"]
-    # Turn 2 skipped entirely; turn 3 sends the stale next_turn (2)
-    s3, e3 = await _reply_turn(svc, MSGS[2], "a3", thread_id=tid, turn=e1["next_turn"], prev=MSGS[1],
-                               account=acct)
-    assert (s3["n"], s3["not_logged"], e3["n"], e3["action"]) == (3, [2], 3, "merge")
-    # A second chat whose first call comes at its 4th message
-    m, me = await _reply_turn(svc, "save from here", "ok", turn=4, prev=MSGS[3], account=acct)
-    assert (m["n"], m["not_logged"], me["n"], me["action"]) == (4, [1, 2, 3], 4, "merge")
-
-    async with pg_store.pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT n, role, fidelity, body FROM turns WHERE thread_id = $1 ORDER BY n, role", tid
-        )
-        users = {r["n"]: (r["fidelity"], r["body"].strip()) for r in rows if r["role"] == "user"}
-        assert users[2][0] == Fidelity.STUB.rank
-        assert [n for n, (_, b) in users.items() if b == MSGS[2]] == [3]
-        assert {(r["n"], r["role"]) for r in rows} >= {(3, "assistant")}
-        violations, _ = await check_pg_fsck_conn(conn)
-        assert violations == []
 
 
 # ── P1-18: a call that lost its thread_id continues the chat's file ───────

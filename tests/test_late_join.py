@@ -6,26 +6,19 @@ Verifies:
   - Stubs written for 1..n-1
   - Returns missing [1..n-1] (capped at 10, older ones marked lost)
 - Backfilling missing turns produces a complete thread with 0 fsck violations.
-- Verified on both FileStore and PgStore.
+- Verified on FileStore.
 """
 
-import asyncio
 from dataclasses import replace
-import os
 from pathlib import Path
 import shutil
 import tempfile
 import pytest
 
-from thread_save.config import load_config, VaultConfig
+from thread_save.config import load_config
 from thread_save.fsck import verify_vault
 from thread_save.service import TurnService
 from thread_save.storage.writer import FileStore
-from thread_save.storage.pg_store import PgStore
-
-TEST_DSN = os.environ.get(
-    "DATABASE_URL", "postgresql://postgres:@127.0.0.1:5432/thread_save_test"
-)
 
 
 @pytest.mark.asyncio
@@ -115,53 +108,3 @@ async def test_d2_late_join_cap_10_older_marked_lost():
     finally:
         shutil.rmtree(vault, ignore_errors=True)
 
-
-@pytest.mark.asyncio
-async def test_d2_late_join_pgstore():
-    """Test late-join turn 5 and backfill on PgStore."""
-    store = PgStore(dsn=TEST_DSN)
-    await store.connect()
-    try:
-        async with store.pool.acquire() as conn:
-            await conn.execute(
-                "TRUNCATE turns, gaps, turn_chunks, outbox, deleted_threads, events, threads, accounts CASCADE"
-            )
-            await conn.execute(
-                "INSERT INTO accounts (id, oauth_sub, slug, created_at) VALUES (gen_random_uuid(), 'sub_late', 'late-user', now())"
-            )
-
-        cfg = VaultConfig(vault_root=Path("./test_vault"), default_account="late-user")
-        svc = TurnService(store, config=cfg)
-
-        res = await svc.save_turn(
-            user_query="Late join on PG",
-            client_turn_number=5,
-            account="late-user",
-        )
-        assert res["ok"] is True
-        assert res["n"] == 5
-        assert res["missing"] == [1, 2, 3, 4]
-        tid = res["thread_id"]
-
-        # Backfill
-        bf_res = await svc.backfill(
-            thread_id=tid,
-            turns=[
-                {
-                    "n": i,
-                    "user_query": f"PG recovered query {i}",
-                    "assistant_response": f"PG recovered reply {i}",
-                }
-                for i in range(1, 5)
-            ],
-            account="late-user",
-        )
-        assert bf_res["ok"] is True
-        assert bf_res["stored"] == [1, 2, 3, 4]
-
-        stats = await store.stats("late-user", tid)
-        assert stats.stubs == 0
-        assert stats.gaps_open == []
-        assert sorted(stats.gaps_recovered) == [1, 2, 3, 4]
-    finally:
-        await store.close()

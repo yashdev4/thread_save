@@ -22,7 +22,6 @@ dependencies = [
 
 [project.scripts]
 thread-save = "thread_save.server:main"
-thread-save-migrate = "thread_save.cli.migrate:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/thread_save"]

@@ -3,8 +3,7 @@
 Rebuilt for the invocation reliability layer:
 - Fidelity enum with numeric ranks for upsert comparison (§3.2)
 - SlotKey for addressing specific (n, role) slots (§3.1)
-- SaveTurnInput with lagged-logging fields (§2.1)
-- BackfillTurn/BackfillInput for gap repair (§2.3)
+- BackfillTurn for gap repair (§2.3)
 - ThreadMeta with open_turn and paused tracking (§4.3, §6.5)
 """
 
@@ -120,57 +119,6 @@ class PageState(BaseModel):
 
 # ── Tool Input Models (§2) ────────────────────────────────────────────────
 
-class SaveTurnInput(BaseModel):
-    """Input schema for vault_save_turn (§2.1).
-
-    Lagged logging: user_query is the new message, prev_response is the
-    model's previous reply (complete and stable by the time this is called).
-    """
-    user_query: str = Field(
-        description="The user's latest message, verbatim.",
-    )
-    thread_id: Optional[str] = Field(
-        default=None,
-        description="Thread ID from the previous result. Omit on the first turn.",
-    )
-    prev_response: Optional[str] = Field(
-        default=None,
-        description="Your previous reply in this conversation, verbatim. Omit on the first turn.",
-    )
-    prev_user_anchor: Optional[str] = Field(
-        default=None,
-        description="First 80 characters of the user's previous message. Omit on the first turn.",
-    )
-    client_turn_number: Optional[int] = Field(
-        default=None,
-        description="Your count of turns in this conversation. A hint for gap detection.",
-    )
-    title_hint: Optional[str] = Field(
-        default=None,
-        description="A short descriptive title. First turn only.",
-    )
-    fidelity: Literal["verbatim", "abridged"] = Field(
-        default="verbatim",
-        description="Self-declared fidelity for prev_response.",
-    )
-    chunk_index: Optional[int] = Field(
-        default=None,
-        description="For prev_response > ~6000 chars: 0-indexed chunk number.",
-    )
-    is_final: bool = Field(
-        default=True,
-        description="Whether this is the final chunk of prev_response.",
-    )
-    model_hint: Optional[str] = Field(
-        default=None,
-        description="Optional model identifier for telemetry.",
-    )
-    current_response: Optional[str] = Field(
-        default=None,
-        description="For 'both' mode: your current reply to be saved now.",
-    )
-
-
 class BackfillTurn(BaseModel):
     """A single turn in a backfill request (§2.3)."""
     n: int = Field(description="The turn number to backfill.")
@@ -185,34 +133,6 @@ class BackfillTurn(BaseModel):
     fidelity: Literal["verbatim", "abridged"] = Field(
         default="verbatim",
         description="Fidelity of the provided content.",
-    )
-
-
-class BackfillInput(BaseModel):
-    """Input schema for vault_backfill (§2.3)."""
-    thread_id: str = Field(description="Thread ID to backfill.")
-    turns: list[BackfillTurn] = Field(
-        description="Turns to add. Maximum 10 per call.",
-    )
-
-
-class FindInput(BaseModel):
-    """Input schema for vault_find."""
-    query: Optional[str] = Field(
-        default=None,
-        description="Keyword, date, or thread_id fragment to search for.",
-    )
-    limit: int = Field(
-        default=10,
-        description="Maximum number of results to return.",
-    )
-
-
-class StatsInput(BaseModel):
-    """Input schema for vault_stats."""
-    thread_id: Optional[str] = Field(
-        default=None,
-        description="Thread ID. Omit for the most recently active thread.",
     )
 
 

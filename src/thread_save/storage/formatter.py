@@ -249,19 +249,9 @@ def format_open_body() -> str:
     return "[response pending — will be filled on next turn]"
 
 
-def format_gap_marker(after_n: int, missing_count: int) -> str:
-    """Format a gap marker (§3.4)."""
-    return f"<!-- gap after i={after_n}: {missing_count} turn(s) not archived -->"
-
-
 def format_thread_header(title: str) -> str:
     """Format the H1 title."""
     return f"# {title}"
-
-
-def format_page_footer(next_filename: str) -> str:
-    """Pagination footer."""
-    return f"\n---\n\n--> Continued in [{next_filename}](./{next_filename})\n"
 
 
 def format_page_header(prev_filename: str) -> str:

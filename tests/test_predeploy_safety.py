@@ -9,26 +9,17 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import httpx
 import pytest
 
 from thread_save.config import VaultConfig
-from thread_save.export.worker import MockExportTarget, OutboxWorker
-from thread_save.security.redactor import get_server_key, redact_text
-from thread_save.service import TurnService
-from thread_save.storage.pg_store import PgStore
+from thread_save.security.redactor import get_server_key
 from thread_save.web.app import create_app
 from thread_save.web.oauth import OAuthServer
 from thread_save.web.startup import (
     REQUIRED_PROD_ENV_VARS,
-    is_localhost_bound,
     validate_startup_requirements,
-)
-
-TEST_DSN = os.environ.get(
-    "DATABASE_URL", "postgresql://postgres:@127.0.0.1:5432/thread_save_test"
 )
 
 
@@ -132,60 +123,3 @@ async def test_metadata_issuer_uses_public_url_with_internal_host(monkeypatch):
 
 # ── 4. Remote GitHub Export Single-Tenant Guard ────────────────────────────
 
-
-@pytest.mark.asyncio
-async def test_remote_github_export_guard_two_accounts_blocks_export(monkeypatch):
-    """Remote GitHub export: refuse to run unless THREADVAULT_SINGLE_TENANT=true and exactly one account exists."""
-    store = PgStore(dsn=TEST_DSN)
-    await store.connect()
-
-    async with store.pool.acquire() as conn:
-        await conn.execute("TRUNCATE turns, gaps, turn_chunks, outbox, deleted_threads, events, threads, accounts CASCADE")
-
-        # 1. Seed two distinct accounts in Postgres
-        await conn.execute(
-            "INSERT INTO accounts (id, oauth_sub, slug, created_at) VALUES (gen_random_uuid(), 'sub_user1', 'user-one', now())"
-        )
-        acc2_id = await conn.fetchval(
-            "INSERT INTO accounts (id, oauth_sub, slug, created_at) VALUES (gen_random_uuid(), 'sub_user2', 'user-two', now()) RETURNING id"
-        )
-
-        # Create a thread for user-one
-        await conn.execute(
-            """INSERT INTO threads (id, account_id, title, slug, delim, current_page)
-               SELECT '01M_TEST_GH_GUARD_0000001', id, 'Test Export Thread', 'test-thread', 'k7Qx', 1
-               FROM accounts WHERE slug = 'user-one'"""
-        )
-        await conn.execute(
-            """INSERT INTO turns (thread_id, n, role, body, fidelity, chars, hash, page)
-               VALUES ('01M_TEST_GH_GUARD_0000001', 1, 'user', 'Hello export', 4, 12, 'h1', 1)"""
-        )
-
-        # Enqueue job targeting github
-        await conn.execute(
-            """INSERT INTO outbox (thread_id, target, due_at, attempts)
-               VALUES ('01M_TEST_GH_GUARD_0000001', 'github', now() - interval '1 minute', 0)"""
-        )
-
-    mock_target = MockExportTarget()
-    worker = OutboxWorker(store=store, targets={"github": mock_target, "default": mock_target})
-
-    # Case A: THREADVAULT_SINGLE_TENANT=true, BUT two accounts exist in DB
-    monkeypatch.setenv("THREADVAULT_SINGLE_TENANT", "true")
-    processed_count = await worker.process_batch()
-
-    # Nothing must be exported because account count == 2
-    assert processed_count == 0
-    assert len(mock_target.exports) == 0, "Expected zero exports when two accounts exist in DB"
-
-    # Case B: Delete second account, leaving exactly 1 account
-    async with store.pool.acquire() as conn:
-        await conn.execute("DELETE FROM accounts WHERE id = $1", acc2_id)
-
-    # Now with THREADVAULT_SINGLE_TENANT=true and exactly 1 account, export succeeds!
-    processed_count = await worker.process_batch()
-    assert processed_count == 1
-    assert len(mock_target.exports) == 1
-    assert mock_target.exports[0]["thread_id"] == "01M_TEST_GH_GUARD_0000001"
-
-    await store.close()

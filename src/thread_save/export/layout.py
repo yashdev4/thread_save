@@ -9,7 +9,7 @@ Implements:
 - Deterministic README.md with automation notices, conflict policies, and deletion semantics
 - Deterministic index/threads.json machine index
 - Deterministic monthly indexes (index/YYYY-MM.md) with relative markdown links
-- Tree extractors for FileStore and PgStore ensuring identical tree projections
+- Tree extractor for FileStore
 """
 
 from __future__ import annotations
@@ -22,8 +22,6 @@ from typing import Any, Optional
 
 from thread_save.storage.formatter import parse_page
 from thread_save.storage.path_resolver import build_filename, validate_slug
-from thread_save.storage.pg_store import PgStore
-from thread_save.storage.renderer import render_thread_markdown
 
 README_TEMPLATE = """# ThreadVault Archive
 
@@ -265,75 +263,3 @@ def extract_filestore_export_tree(
 
     return generate_archive_tree(list(threads_map.values()), account_dir=account_dir)
 
-
-async def extract_pgstore_export_tree(
-    store: PgStore,
-    account_id: str,
-    account_dir: bool = False,
-) -> dict[str, str]:
-    """Extract full deterministic archive tree from PgStore."""
-    threads_map: dict[str, ExportThreadInfo] = {}
-
-    async with store.pool.acquire() as conn:
-        acc_uuid = await store.resolve_account_uuid(conn, account_id)
-        async with conn.transaction():
-            await conn.execute("SELECT set_config('app.account_id', $1, true)", str(acc_uuid))
-            rows = await conn.fetch(
-                """SELECT id, title, slug, created_at, updated_at, max_n, current_page
-                   FROM threads WHERE account_id = $1
-                   ORDER BY id ASC""",
-                acc_uuid,
-            )
-
-            for r in rows:
-                tid = r["id"]
-                created_dt = (
-                    r["created_at"]
-                    if isinstance(r["created_at"], datetime)
-                    else datetime.fromisoformat(str(r["created_at"]))
-                )
-                updated_dt = (
-                    r["updated_at"]
-                    if isinstance(r["updated_at"], datetime)
-                    else datetime.fromisoformat(str(r["updated_at"]))
-                )
-
-                # Total turns
-                turn_count = await conn.fetchval(
-                    "SELECT count(*) FROM turns WHERE thread_id = $1", tid
-                ) or 0
-
-                thread_info = ExportThreadInfo(
-                    thread_id=tid,
-                    title=r["title"] or "Untitled Thread",
-                    slug=r["slug"] or "untitled",
-                    account=account_id,
-                    created_at=created_dt,
-                    updated_at=updated_dt,
-                    turns=turn_count,
-                )
-
-                # Fetch all distinct pages
-                pages = await conn.fetch(
-                    "SELECT DISTINCT page FROM turns WHERE thread_id = $1 ORDER BY page ASC", tid
-                )
-                page_nums = [p["page"] for p in pages] if pages else [1]
-
-                for p_num in page_nums:
-                    content = await render_thread_markdown(
-                        store, account_id=account_id, thread_id=tid, page=p_num
-                    )
-                    repo_path = build_repo_path(
-                        dt=created_dt,
-                        account=account_id,
-                        thread_id_short=tid[-6:],
-                        slug=r["slug"] or "untitled",
-                        page=p_num,
-                        account_dir=account_dir,
-                    )
-                    thread_info.pages.append(repo_path)
-                    thread_info.page_contents[repo_path] = content
-
-                threads_map[tid] = thread_info
-
-    return generate_archive_tree(list(threads_map.values()), account_dir=account_dir)

@@ -1,51 +1,40 @@
 """Test suite for Streamable HTTP transport and Web API (Milestone X3).
 
 Verifies:
-- /health endpoint status & database check
+- /health endpoint status
 - Origin validation (allow claude.ai/claude.com/localhost, reject unauthorized origins)
 - Max body size enforcement (413 Payload Too Large)
 - Rate limiting enforcement (429 Too Many Requests)
 - Streamable HTTP protocol over /mcp:
   - initialize handshake
   - tools/list returning vault_* tools with honest descriptions
-  - tools/call executing vault_log_turn and vault_find against PgStore
+  - tools/call executing vault_log_turn and vault_find against FileStore
 """
 
-import asyncio
 import json
-import os
-from pathlib import Path
 import pytest
 import httpx
 
 from thread_save.config import VaultConfig
 from thread_save.service import TurnService
-from thread_save.storage.pg_store import PgStore
+from thread_save.storage.writer import FileStore
 from thread_save.web.app import create_app
 from thread_save.web.middleware import RateLimiter
 
-TEST_DSN = os.environ.get(
-    "DATABASE_URL", "postgresql://postgres:@127.0.0.1:5432/thread_save_test"
-)
+@pytest.fixture
+def cfg(tmp_path):
+    return VaultConfig(vault_root=tmp_path, default_account="http-user")
 
 
 @pytest.fixture
-async def pg_store():
-    store = PgStore(dsn=TEST_DSN)
-    await store.connect()
-    async with store.pool.acquire() as conn:
-        await conn.execute(
-            "TRUNCATE turns, gaps, turn_chunks, outbox, deleted_threads, events, threads, accounts CASCADE"
-        )
-    yield store
-    await store.close()
+def store(cfg):
+    return FileStore(config=cfg)
 
 
 @pytest.fixture
-def app(pg_store):
-    cfg = VaultConfig(vault_root=Path("./test_vault"), default_account="http-user")
-    svc = TurnService(pg_store, config=cfg)
-    return create_app(pg_store=pg_store, service=svc, config=cfg)
+def app(store, cfg):
+    svc = TurnService(store, config=cfg)
+    return create_app(service=svc, config=cfg)
 
 
 @pytest.mark.asyncio
@@ -114,11 +103,11 @@ async def test_body_size_limit(app):
 
 
 @pytest.mark.asyncio
-async def test_rate_limiting(pg_store):
+async def test_rate_limiting(tmp_path):
     limiter = RateLimiter(max_requests=3, window_seconds=60.0)
-    cfg = VaultConfig(vault_root=Path("./test_vault"), default_account="rate-user")
-    svc = TurnService(pg_store, config=cfg)
-    rate_app = create_app(pg_store=pg_store, service=svc, config=cfg, rate_limiter=limiter)
+    cfg = VaultConfig(vault_root=tmp_path, default_account="rate-user")
+    svc = TurnService(FileStore(config=cfg), config=cfg)
+    rate_app = create_app(service=svc, config=cfg, rate_limiter=limiter)
 
     async with rate_app.router.lifespan_context(rate_app):
         transport = httpx.ASGITransport(app=rate_app)
@@ -138,7 +127,7 @@ async def test_rate_limiting(pg_store):
 
 
 @pytest.mark.asyncio
-async def test_streamable_http_mcp_flow(app, pg_store):
+async def test_streamable_http_mcp_flow(app, store):
     """Complete Streamable HTTP handshake, tool listing, and tool execution."""
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
@@ -227,8 +216,8 @@ async def test_streamable_http_mcp_flow(app, pg_store):
             assert set(result_dict) == {"ok", "thread_id", "next_turn", "next"}
             tid = result_dict["thread_id"]
 
-            # Verify both sides of the turn were written to Postgres
-            stats = await pg_store.stats("http-user", tid)
+            # Verify both sides of the turn were written to the store
+            stats = await store.stats("http-user", tid)
             assert stats is not None
             assert stats.total_turns == 2
             assert stats.reported == 1

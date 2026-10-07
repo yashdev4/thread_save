@@ -159,31 +159,6 @@ class SlotIndex:
                 return k.n
         return None
 
-    def has_assistant_turn(self, thread_id: str, n: int) -> bool:
-        """Check if an assistant turn exists at position n."""
-        return SlotKey(n, "assistant") in self._get_slots(thread_id)
-
-    def find_user_turn_by_anchor(
-        self,
-        thread_id: str,
-        normalised_anchor: str,
-        anchor_map: dict[int, str],
-    ) -> Optional[int]:
-        """Find a user turn n whose normalised anchor matches.
-
-        Args:
-            thread_id: Thread to search.
-            normalised_anchor: The anchor to match.
-            anchor_map: {n: normalised_anchor} for known user turns.
-
-        Returns:
-            The n if exactly one match, else None.
-        """
-        matches = [n for n, a in anchor_map.items() if a == normalised_anchor]
-        if len(matches) == 1:
-            return matches[0]
-        return None  # Zero or ambiguous → caller must split (I-3)
-
     def all_slot_keys(self, thread_id: str) -> list[SlotKey]:
         """List all known slot keys for a thread."""
         return list(self._get_slots(thread_id).keys())

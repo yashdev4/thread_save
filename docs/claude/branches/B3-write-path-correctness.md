@@ -70,6 +70,7 @@
 6. FileStore restart safety (W-4) and atomic creation (W-11): B6 L1/L2. Add a two-instance restart case to the FileStore Hypothesis model.
 
 ## Change log (newest first)
+- 2026-10-07 · REPLACED · Dead code removed: `SlotIndex.has_assistant_turn`/`find_user_turn_by_anchor`, `FileStore._atomic_append`, `format_gap_marker`/`format_page_footer`, `find_latest_page`, `GitHubConflictError`, `app.run_server`; root one-off scripts (`patch*.py`, `inject_tests.py`, `run_tests.py`, `test_3_5.py`, `test_smoke.py`, `add_protocol_methods.py`), `scripts/db_init.py`, `tests/build_fsck_fixture.py` (its only user `test_migration_cli.py` went with the Postgres removal). **Kept** `storage/orphan.py`: `test_write_path_invariants.py` covers `reap_orphans`, and B2 open item 3 plans to schedule it. Staged, not committed.
 - 2026-10-06 · FOUND/ADDED · P1-18: a call that lost or mistyped its `thread_id` opened a new file (deployed mirror: 7 one-turn files from a few chats). FileStore binding now recovers it by short id / near id (`id_fuzzy`), or by the single thread active in the last 6 h whose latest user message the call names (`recent`). Never on a chat's first call; never on ambiguity (I-3 kept). PgStore not yet. Uncommitted.
 - 2026-10-06 · FIXED · WD read path: exact body round trip (`formatter._turn_body`), `tests/test_turn_roundtrip.py`; uncommitted.
 - 2026-10-06 · FOUND · WD ✅ → ◐: parser strips first-line indentation and drops `[… — not archived]`-shaped lines; only `canonical_v1` had been checked.

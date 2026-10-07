@@ -10,70 +10,31 @@ Verifies:
 """
 
 import json
-import os
-from pathlib import Path
 import pytest
 import httpx
 
 from thread_save.config import VaultConfig
 from thread_save.service import TurnService
-from thread_save.storage.pg_store import PgStore
+from thread_save.storage.writer import FileStore
 from thread_save.web.app import create_app
-from scripts.cross_surface_test import run_scenario_via_service, run_scenario_via_http
-
-TEST_DSN = os.environ.get(
-    "DATABASE_URL", "postgresql://postgres:@127.0.0.1:5432/thread_save_test"
-)
+from scripts.cross_surface_test import run_scenario_via_http
 
 
 @pytest.fixture
-async def clean_pg_store():
-    store = PgStore(dsn=TEST_DSN)
-    await store.connect()
-    async with store.pool.acquire() as conn:
-        await conn.execute(
-            "TRUNCATE turns, gaps, turn_chunks, outbox, deleted_threads, events, threads, accounts CASCADE"
-        )
-    yield store
-    await store.close()
+def store(tmp_path):
+    return FileStore(config=VaultConfig(vault_root=tmp_path, default_account="cross-surface-user"))
 
 
 @pytest.fixture
-def service_and_app(clean_pg_store):
-    cfg = VaultConfig(vault_root=Path("./test_vault"), default_account="cross-surface-user")
-    svc = TurnService(clean_pg_store, config=cfg)
-    app = create_app(pg_store=clean_pg_store, service=svc, config=cfg)
+def service_and_app(store, tmp_path):
+    cfg = VaultConfig(vault_root=tmp_path, default_account="cross-surface-user")
+    svc = TurnService(store, config=cfg)
+    app = create_app(service=svc, config=cfg)
     return svc, app
 
 
 @pytest.mark.asyncio
-async def test_cross_surface_full_cycle_service(clean_pg_store, service_and_app):
-    svc, _ = service_and_app
-    res = await run_scenario_via_service(svc, account="cross-surface-user", verbose=False)
-
-    assert res.success is True
-    assert res.total_turns >= 10
-    assert res.split_count == 0
-    assert res.coverage_pct == 100.0
-    assert res.redaction_verified is True
-    assert res.chunk_assembly_verified is True
-    assert "Desktop" in res.surfaces_tested
-    assert "Android" in res.surfaces_tested
-    assert "iOS" in res.surfaces_tested
-    assert "Web" in res.surfaces_tested
-
-    # Verify database state directly
-    turns = await clean_pg_store.get_turns("cross-surface-user", res.thread_id)
-    assert len(turns) >= 10
-
-    # Verify no plaintext secret leaked
-    for t in turns:
-        assert "ak_live_99887766554433221100aabbccdd" not in t.body
-        assert "AKIAIOSFODNN7EXAMPLE" not in t.body
-
-
-@pytest.mark.asyncio
-async def test_cross_surface_http_transport(clean_pg_store, service_and_app):
+async def test_cross_surface_http_transport(store, service_and_app):
     _, app = service_and_app
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
@@ -165,7 +126,7 @@ async def test_cross_surface_http_transport(clean_pg_store, service_and_app):
             assert r4["next_turn"] == 5
 
             # Verify stats in Postgres
-            stats = await clean_pg_store.stats("cross-surface-http-user", thread_id)
+            stats = await store.stats("cross-surface-http-user", thread_id)
             assert stats.total_turns == 8  # 4 complete turns, both sides, no open slot
             assert stats.reported == 4
             assert stats.stubs == 0

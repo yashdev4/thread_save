@@ -27,8 +27,8 @@ services:
         value: "false"
       - key: THREADVAULT_GH_REPO
         value: "https://github.com/yashdev4/thread_vault.git"
-      - key: THREADVAULT_SYNC_INTERVAL_SECONDS
-        value: "60"
+      - key: THREADVAULT_SYNC_SETTLE_SECONDS # GitHub push runs after saves, not on a timer
+        value: "30"
       - key: THREADVAULT_ALLOWED_HOSTS
         value: "*"
       - key: THREADVAULT_JWT_SECRET

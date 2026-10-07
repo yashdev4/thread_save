@@ -12,7 +12,6 @@ import pytest
 
 from thread_save.cli.github import main as cli_main, run_squash
 from thread_save.export.github import GitHubDataApiTarget, GitHubFileEntry
-from thread_save.export.sync import GitHubBatchExporter, GitHubExportConfig
 from tests.test_github_export import MockGitHubApi
 
 
@@ -65,45 +64,6 @@ async def test_squash_produces_single_parentless_commit_with_current_tree():
 
     # Property 3: Commit message
     assert squashed_commit["message"] == "vault: squash test"
-
-
-@pytest.mark.asyncio
-async def test_batch_file_removal_deletes_pages_from_tree():
-    """Verify deleting thread files removes them from remote tree in batch."""
-    mock = MockGitHubApi(is_private=True)
-    transport = httpx.MockTransport(mock.handle_request)
-    client = httpx.AsyncClient(transport=transport)
-
-    target = GitHubDataApiTarget(
-        repo="testowner/testrepo",
-        token="ghp_test_token_12345",
-        client=client,
-    )
-    config = GitHubExportConfig(repo="testowner/testrepo", token="ghp_test_token_12345")
-    exporter = GitHubBatchExporter(target=target, config=config)
-
-    # Pre-populate manifest
-    p01 = "2026/10/thread_p01.md"
-    p02 = "2026/10/thread_p02.md"
-    exporter.manifest[p01] = "hash1"
-    exporter.manifest[p02] = "hash2"
-    exporter.blob_shas[p01] = "blob1"
-    exporter.blob_shas[p02] = "blob2"
-
-    # Delete p01
-    res = await exporter.delete_thread_files([p01])
-    assert res is not None
-    assert res.files_deleted == 1
-
-    # Manifest and blob_shas cleared for p01
-    assert p01 not in exporter.manifest
-    assert p01 not in exporter.blob_shas
-    assert p02 in exporter.manifest
-
-    # Tree write call contains deletion entry
-    tree_items = mock.write_calls[0]["payload"]["tree"]
-    deleted_item = [item for item in tree_items if item["path"] == p01][0]
-    assert deleted_item["sha"] is None
 
 
 @pytest.mark.asyncio
